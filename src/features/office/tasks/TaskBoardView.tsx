@@ -227,7 +227,7 @@ export function TaskBoardView({
                               : "border-white/8 bg-black/12 hover:border-cyan-400/20 hover:bg-cyan-500/[0.04]"
                           }`}
                         >
-                          <div className="flex items-start justify-between gap-2">
+                          <div className="flex flex-col items-start gap-1.5">
                             <div className="line-clamp-2 text-sm font-medium text-white/90">
                               {card.title}
                             </div>

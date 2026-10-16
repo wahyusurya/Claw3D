@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import {
   OFFICE_FLOORS,
-  getAdjacentEnabledOfficeFloorId,
+  getAdjacentAvailableFloorId,
   listAvailableFloorsForAdapter,
   type FloorDefinition,
   type FloorId,
@@ -163,7 +163,9 @@ export function OfficeFloorNav({
               <button
                 type="button"
                 className="rounded border border-amber-500/20 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-100/80 transition-colors hover:border-amber-400/45 hover:text-amber-50"
-                onClick={() => onSelectFloor(getAdjacentEnabledOfficeFloorId(activeFloor.id, -1))}
+                onClick={() =>
+                  onSelectFloor(getAdjacentAvailableFloorId(activeFloor.id, -1, activeAdapterType))
+                }
                 aria-label="Switch to previous enabled floor"
               >
                 Prev
@@ -171,7 +173,9 @@ export function OfficeFloorNav({
               <button
                 type="button"
                 className="rounded border border-amber-500/20 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-100/80 transition-colors hover:border-amber-400/45 hover:text-amber-50"
-                onClick={() => onSelectFloor(getAdjacentEnabledOfficeFloorId(activeFloor.id, 1))}
+                onClick={() =>
+                  onSelectFloor(getAdjacentAvailableFloorId(activeFloor.id, 1, activeAdapterType))
+                }
                 aria-label="Switch to next enabled floor"
               >
                 Next

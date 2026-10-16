@@ -1,0 +1,37 @@
+/*
+ * Local readability pass: the stock UI uses 9-11px monospace caps, very wide tracking and
+ * 20-55% opacity text on near-black panels. These overrides sit in the utilities layer after
+ * Tailwind's own utilities, so they beat the base classes while hover:/focus: variants
+ * (higher specificity) keep working.
+ */
+@layer utilities {
+  /* Minimum legible sizes */
+  [class~="text-[9px]"] { font-size: 11px; }
+  [class~="text-[10px]"] { font-size: 12px; }
+  [class~="text-[11px]"] { font-size: 12.5px; }
+
+  /* Faint text -> readable contrast */
+  [class~="text-white/20"], [class~="text-white/22"], [class~="text-white/25"],
+  [class~="text-white/28"], [class~="text-white/30"], [class~="text-white/32"],
+  [class~="text-white/35"], [class~="text-white/38"], [class~="text-white/40"],
+  [class~="text-white/42"], [class~="text-white/45"], [class~="text-white/50"],
+  [class~="text-white/55"] { color: rgb(255 255 255 / 0.74); }
+  [class~="text-cyan-100/30"], [class~="text-cyan-100/45"],
+  [class~="text-cyan-100/48"] { color: rgb(207 250 254 / 0.78); }
+  [class~="text-sky-200/45"] { color: rgb(186 230 253 / 0.78); }
+  [class~="text-amber-400/40"] { color: rgb(251 191 36 / 0.82); }
+  [class~="text-amber-500/40"], [class~="text-amber-500/50"] { color: rgb(245 158 11 / 0.82); }
+
+  /* Very wide letter-spacing on small caps hurts legibility */
+  [class~="tracking-[0.16em]"], [class~="tracking-[0.18em]"], [class~="tracking-[0.2em]"],
+  [class~="tracking-[0.22em]"], [class~="tracking-[0.24em]"], [class~="tracking-[0.26em]"],
+  [class~="tracking-[0.28em]"], [class~="tracking-[0.3em]"],
+  [class~="tracking-[0.32em]"] { letter-spacing: 0.08em; }
+
+  /* HQ sidebar tabs: 4 columns don't fit at readable sizes -> 2x2 grid */
+  [role="tablist"][aria-label="Headquarters panels"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  [role="tablist"][aria-label="Headquarters panels"] > [role="tab"] { border-bottom: 1px solid rgb(6 182 212 / 0.1); }
+
+  /* Vertical side tabs (OPEN HQ / MARKETPLACE / ANALYTICS) */
+  [class~="[writing-mode:vertical-rl]"] { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
+}

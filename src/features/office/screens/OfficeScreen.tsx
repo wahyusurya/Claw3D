@@ -173,6 +173,7 @@ import { useOfficeSkillTriggers } from "@/features/office/hooks/useOfficeSkillTr
 import { useRemoteOfficePresence } from "@/features/office/hooks/useRemoteOfficePresence";
 import { useRemoteOfficeLayout } from "@/features/office/hooks/useRemoteOfficeLayout";
 import { useOfficeSkillsMarketplace } from "@/features/office/hooks/useOfficeSkillsMarketplace";
+import { usePersistedToggle } from "@/features/office/hooks/usePersistedToggle";
 import { useOfficeStandupController } from "@/features/office/hooks/useOfficeStandupController";
 import { useRunLog } from "@/features/office/hooks/useRunLog";
 import { useTaskBoardController } from "@/features/office/tasks/useTaskBoardController";
@@ -1115,6 +1116,10 @@ export function OfficeScreen({
     Record<string, string>
   >({});
   const [activeFloorId, setActiveFloorId] = useState<FloorId>("lobby");
+  // Overlay panels the viewer can hide (remembered per browser).
+  const [floorNavHidden, toggleFloorNavHidden] = usePersistedToggle("claw3d:ui:floor-nav-hidden");
+  const [eventConsoleHidden, toggleEventConsoleHidden] = usePersistedToggle("claw3d:ui:event-console-hidden");
+  const eventConsoleVisible = showOpenClawConsole && !eventConsoleHidden;
   const [pendingFloorRuntimeSwitch, setPendingFloorRuntimeSwitch] =
     useState<PendingFloorRuntimeSwitch | null>(null);
   const previousGatewayStatusRef = useRef<"disconnected" | "connecting" | "connected">(
@@ -4748,6 +4753,7 @@ export function OfficeScreen({
           </div>
         </div>
       ) : null}
+      {!floorNavHidden ? (
       <OfficeFloorNav
         activeFloorId={activeFloor.id}
         floorRosterCache={floorRosterCache}
@@ -4756,6 +4762,7 @@ export function OfficeScreen({
         }}
         activeAdapterType={(selectedAdapterType as FloorProvider) ?? null}
       />
+      ) : null}
       <section className="relative h-full min-h-0 min-w-0 overflow-hidden">
         <RetroOffice3D
           key={activeFloor.id}
@@ -4888,7 +4895,7 @@ export function OfficeScreen({
           taskBoardCronError={
             taskBoard.sharedTasksError ?? taskBoard.gatewayTasksError ?? taskBoard.cronError
           }
-          taskBoardCaptureDebug={showOpenClawConsole ? taskBoard.taskCaptureDebug : undefined}
+          taskBoardCaptureDebug={eventConsoleVisible ? taskBoard.taskCaptureDebug : undefined}
           onTaskBoardCreateCard={() => {
             taskBoard.createManualCard();
           }}
@@ -5087,7 +5094,7 @@ export function OfficeScreen({
               cronError={
                 taskBoard.sharedTasksError ?? taskBoard.gatewayTasksError ?? taskBoard.cronError
               }
-              taskCaptureDebug={showOpenClawConsole ? taskBoard.taskCaptureDebug : undefined}
+              taskCaptureDebug={eventConsoleVisible ? taskBoard.taskCaptureDebug : undefined}
               onCreateCard={() => {
                 taskBoard.createManualCard();
                 setActiveSidebarTab("kanban");
@@ -5172,8 +5179,30 @@ export function OfficeScreen({
         />
       ) : null}
 
-      {showOpenClawConsole ? (
-        <section className="pointer-events-auto fixed bottom-3 left-3 z-30 flex w-[520px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded border border-cyan-500/25 bg-black/78 shadow-2xl backdrop-blur">
+      {/* Panel toggles, stacked just above the working/idle/error status bar. */}
+      <div className="pointer-events-auto fixed bottom-12 left-3 z-40 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleFloorNavHidden}
+          aria-pressed={!floorNavHidden}
+          className="rounded border border-amber-500/25 bg-black/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-amber-100/80 backdrop-blur transition-colors hover:border-amber-400/50 hover:text-amber-50"
+        >
+          {floorNavHidden ? "Show floors" : "Hide floors"}
+        </button>
+        {showOpenClawConsole ? (
+          <button
+            type="button"
+            onClick={toggleEventConsoleHidden}
+            aria-pressed={!eventConsoleHidden}
+            className="rounded border border-amber-500/25 bg-black/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-amber-100/80 backdrop-blur transition-colors hover:border-amber-400/50 hover:text-amber-50"
+          >
+            {eventConsoleHidden ? "Show console" : "Hide console"}
+          </button>
+        ) : null}
+      </div>
+
+      {eventConsoleVisible ? (
+        <section className="pointer-events-auto fixed bottom-[5.25rem] left-3 z-30 flex w-[520px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded border border-cyan-500/25 bg-black/78 shadow-2xl backdrop-blur">
           <div className="flex items-center justify-between border-b border-cyan-500/15 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-200/80">
             <span>Agent Event Console</span>
             <div className="flex items-center gap-2">

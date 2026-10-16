@@ -85,3 +85,21 @@ describe("office floor registry", () => {
     expect(getAdjacentEnabledOfficeFloorId("lobby", -1)).toBe("custom-second");
   });
 });
+
+describe("listAvailableFloorsForAdapter", () => {
+  it("hides the lobby once a real runtime is active", async () => {
+    const { listAvailableFloorsForAdapter } = await import("@/lib/office/floors");
+    expect(listAvailableFloorsForAdapter("hermes").map((f) => f.id)).toEqual(["hermes-first"]);
+    expect(listAvailableFloorsForAdapter(null).map((f) => f.id)).toContain("lobby");
+    expect(listAvailableFloorsForAdapter("demo").map((f) => f.id)).toContain("lobby");
+  });
+});
+
+describe("getAdjacentAvailableFloorId", () => {
+  it("cycles only floors available for the active adapter", async () => {
+    const { getAdjacentAvailableFloorId } = await import("@/lib/office/floors");
+    expect(getAdjacentAvailableFloorId("hermes-first", 1, "hermes")).toBe("hermes-first");
+    expect(getAdjacentAvailableFloorId("hermes-first", -1, "hermes")).toBe("hermes-first");
+    expect(getAdjacentAvailableFloorId("lobby", 1, "hermes")).toBe("hermes-first");
+  });
+});

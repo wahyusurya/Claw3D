@@ -165,7 +165,8 @@ export const resolveActiveOfficeFloorId = (floorId: FloorId | null | undefined):
 
 /**
  * Floors visible in the nav for a given active adapter.
- * - Lobby (kind="lobby") always shown.
+ * - Lobby (kind="lobby") shown only without a real runtime (null/"demo"); a connected
+ *   backend gets its own floor instead. Lobby stays the internal fallback scene.
  * - Runtime floors shown only when their provider matches the active adapter.
  * - Non-runtime enabled floors (training, market, campus) always shown.
  *
@@ -176,7 +177,7 @@ export const listAvailableFloorsForAdapter = (
 ): FloorDefinition[] => {
   return OFFICE_FLOORS.filter((floor) => {
     if (!floor.enabled) return false;
-    if (floor.kind === "lobby") return true;
+    if (floor.kind === "lobby") return !activeAdapterType || activeAdapterType === "demo";
     if (floor.kind === "runtime") {
       return (
         Boolean(activeAdapterType) &&
@@ -187,6 +188,20 @@ export const listAvailableFloorsForAdapter = (
     // training / market / campus
     return true;
   });
+};
+
+/** Prev/Next within the floors the nav actually shows for the active adapter. */
+export const getAdjacentAvailableFloorId = (
+  floorId: FloorId,
+  direction: 1 | -1,
+  activeAdapterType: FloorProvider | "demo" | null | undefined,
+): FloorId => {
+  const available = listAvailableFloorsForAdapter(activeAdapterType);
+  if (available.length === 0) return DEFAULT_ACTIVE_FLOOR_ID;
+  const currentIndex = available.findIndex((floor) => floor.id === floorId);
+  const nextIndex =
+    currentIndex < 0 ? 0 : (currentIndex + direction + available.length) % available.length;
+  return available[nextIndex].id;
 };
 
 export const getAdjacentEnabledOfficeFloorId = (

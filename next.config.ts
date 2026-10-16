@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 
+// Opt-in (build time) for plain-HTTP deployments, e.g. behind Tailscale without TLS:
+// upgrade-insecure-requests/HSTS would rewrite http/ws asset + gateway URLs to https/wss and break them.
+const allowPlainHttp = process.env.STUDIO_ALLOW_HTTP === "1";
+
 const securityHeaders = [
   {
     key: "Content-Security-Policy",
@@ -14,9 +18,11 @@ const securityHeaders = [
       "style-src 'self' 'unsafe-inline' https:",
       // 'unsafe-eval' is required by Next.js dev mode (source maps, HMR).
       // In production it is dropped — React and Three.js do not need eval.
+      // 'wasm-unsafe-eval' only permits WebAssembly compilation (three.js Meshopt/Draco
+      // decoders); JS string evaluation stays blocked.
       ...(process.env.NODE_ENV !== "production"
         ? ["script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:"]
-        : ["script-src 'self' 'unsafe-inline' blob:"]),
+        : ["script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:"]),
       // connect-src is intentionally broad: gateway URLs are user-configured
       // at runtime and cannot be enumerated at build time.
       // Restrict further when a fixed deployment target is known.
@@ -24,7 +30,7 @@ const securityHeaders = [
       "media-src 'self' blob: data: http: https:",
       "worker-src 'self' blob:",
       "object-src 'none'",
-      "upgrade-insecure-requests",
+      ...(allowPlainHttp ? [] : ["upgrade-insecure-requests"]),
     ].join("; "),
   },
   {
@@ -49,7 +55,7 @@ const securityHeaders = [
   },
 ];
 
-if (process.env.NODE_ENV === "production") {
+if (process.env.NODE_ENV === "production" && !allowPlainHttp) {
   securityHeaders.push({
     key: "Strict-Transport-Security",
     value: "max-age=31536000; includeSubDomains",

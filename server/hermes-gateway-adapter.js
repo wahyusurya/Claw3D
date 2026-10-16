@@ -62,6 +62,10 @@ const ADAPTER_PORT = parseInt(process.env.HERMES_ADAPTER_PORT || "18789", 10);
 const HERMES_MODEL = process.env.HERMES_MODEL || "hermes";
 const HERMES_AGENT_NAME = process.env.HERMES_AGENT_NAME || "Hermes";
 const HOME = process.env.HOME || "/tmp";
+// Hermes profile skills dir as seen by this process (read-only mount) and as the host path
+// Hermes itself uses. Reported via skills.status so the Studio skill UI has a workspace.
+const HERMES_SKILLS_DIR = process.env.HERMES_SKILLS_DIR || "";
+const HERMES_SKILLS_HOST_DIR = process.env.HERMES_SKILLS_HOST_DIR || HERMES_SKILLS_DIR || `${HOME}/.hermes/skills`;
 
 const AGENT_ID = "hermes";
 const MAIN_KEY = "main";
@@ -548,6 +552,54 @@ async function streamOneTurn(messages, model, tools, onTextDelta, abortCheck) {
   }
 
   return { textContent, toolCalls, finishReason };
+}
+
+// ---------------------------------------------------------------------------
+// Hermes skills -> Studio SkillStatusEntry (read-only listing of SKILL.md dirs)
+// ---------------------------------------------------------------------------
+
+function listHermesSkills() {
+  if (!HERMES_SKILLS_DIR) return [];
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(HERMES_SKILLS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory());
+  } catch {
+    return [];
+  }
+  const emptyReqs = { bins: [], anyBins: [], env: [], config: [], os: [] };
+  const skills = [];
+  for (const dir of dirs) {
+    let text = "";
+    try {
+      text = fs.readFileSync(path.join(HERMES_SKILLS_DIR, dir.name, "SKILL.md"), "utf8");
+    } catch {
+      continue; // category folders etc. have no SKILL.md at this level
+    }
+    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? "";
+    const field = (key) => {
+      const m = new RegExp(`^${key}:\\s*(.*)$`, "m").exec(front);
+      return m ? m[1].trim().replace(/^["']|["']$/g, "") : "";
+    };
+    const baseDir = path.join(HERMES_SKILLS_HOST_DIR, dir.name);
+    skills.push({
+      name: field("name") || dir.name,
+      description: field("description"),
+      source: "hermes",
+      bundled: false,
+      filePath: path.join(baseDir, "SKILL.md"),
+      baseDir,
+      skillKey: dir.name,
+      always: false,
+      disabled: false,
+      blockedByAllowlist: false,
+      eligible: true,
+      requirements: emptyReqs,
+      missing: emptyReqs,
+      configChecks: [],
+      install: [],
+    });
+  }
+  return skills;
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1139,11 @@ async function handleMethod(method, params, id, sendEvent) {
     // --- Skills & models ----------------------------------------------------
 
     case "skills.status":
-      return resOk(id, { skills: [] });
+      return resOk(id, {
+        workspaceDir: path.dirname(HERMES_SKILLS_HOST_DIR),
+        managedSkillsDir: HERMES_SKILLS_HOST_DIR,
+        skills: listHermesSkills(),
+      });
 
     case "models.list":
       try {

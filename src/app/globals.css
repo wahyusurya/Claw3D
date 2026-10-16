@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "../../node_modules/react-mentions-ts/styles/tailwind.css";
 @import "./styles/markdown.css";
+@import "./styles/readability.css";
 
 @custom-variant dark (&:is(.dark *));
 

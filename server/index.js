@@ -86,6 +86,8 @@ async function main() {
 
   const accessGate = createAccessGate({
     token: process.env.STUDIO_ACCESS_TOKEN,
+    loginUser: process.env.STUDIO_LOGIN_USER,
+    loginPasswordHash: process.env.STUDIO_LOGIN_PASSWORD_HASH,
   });
 
   const proxy = createGatewayProxy({
