@@ -1,0 +1,61 @@
+# Claw3D studio + Hermes adapter, wired to a Hermes profile's API server.
+#
+# Setup:
+#   1. Hermes profile: enable its API server on loopback (profile .env):
+#        API_SERVER_KEY=<random>  API_SERVER_HOST=127.0.0.1  API_SERVER_PORT=8643
+#   2. cp .env.docker.example .env.docker   -> secrets (HERMES_API_KEY, STUDIO_ACCESS_TOKEN, login)
+#   3. .env (read by compose for the ${...} values below), e.g.:
+#        CLAW3D_HOST=100.x.y.z                      # IP to bind the UI to (e.g. your Tailscale IP)
+#        CLAW3D_HERMES_SKILLS_DIR=/home/you/.hermes/profiles/claw3d/skills
+#   4. Optional GitHub screen: printf 'GH_TOKEN=%s\n' "$(gh auth token)" > .env.github
+#   5. docker compose up -d --build   then   ./set-login.sh   for username/password login
+#
+# ponytail: host networking so containers reach Hermes on host loopback without exposing its API port.
+name: claw3d
+
+services:
+  hermes-adapter:
+    image: claw3d:local
+    command: ["node", "server/hermes-gateway-adapter.js"]
+    network_mode: host
+    restart: unless-stopped
+    env_file: .env.docker
+    environment:
+      HOME: /data # adapter writes ~/.hermes/* state; keep it off the real ~/.hermes
+      HERMES_API_URL: ${CLAW3D_HERMES_API_URL:-http://127.0.0.1:8643}
+      HERMES_ADAPTER_PORT: ${CLAW3D_ADAPTER_PORT:-18789} # adapter binds 127.0.0.1 only
+      HERMES_MODEL: ${CLAW3D_HERMES_MODEL:-claw3d} # Hermes API model id = profile name
+      HERMES_AGENT_NAME: ${CLAW3D_AGENT_NAME:-Claw3D}
+      HERMES_SKILLS_DIR: /hermes-skills
+      HERMES_SKILLS_HOST_DIR: ${CLAW3D_HERMES_SKILLS_DIR:?set CLAW3D_HERMES_SKILLS_DIR in .env}
+    volumes:
+      - adapter-data:/data
+      - ${CLAW3D_HERMES_SKILLS_DIR}:/hermes-skills:ro
+
+  studio:
+    image: claw3d:local
+    build:
+      context: .
+      args:
+        STUDIO_ALLOW_HTTP: ${CLAW3D_ALLOW_HTTP:-1} # 1 = served over plain HTTP (no TLS in front)
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [hermes-adapter]
+    env_file:
+      - .env.docker
+      - path: .env.github # GH_TOKEN for the GitHub screen (studio only)
+        required: false
+    environment:
+      HOST: ${CLAW3D_HOST:?set CLAW3D_HOST in .env}
+      PORT: ${CLAW3D_PORT:-3005}
+      CLAW3D_GATEWAY_URL: ws://127.0.0.1:${CLAW3D_ADAPTER_PORT:-18789}
+      CLAW3D_GATEWAY_ADAPTER_TYPE: hermes
+      UPSTREAM_ALLOWLIST: 127.0.0.1,localhost
+      STUDIO_ALLOW_HTTP: ${CLAW3D_ALLOW_HTTP:-1} # must match the build arg
+      OPENCLAW_STATE_DIR: /state # settings, office layout, Kanban tasks
+    user: "${CLAW3D_UID:-1000}:${CLAW3D_GID:-1000}" # files in ./state stay writable by Hermes on the host
+    volumes:
+      - ./state:/state # Kanban tasks.json is shared with Hermes via this folder
+
+volumes:
+  adapter-data:
