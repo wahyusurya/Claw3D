@@ -203,4 +203,20 @@ describe("StudioSettingsCoordinator", () => {
 
     expect(updateSettings).not.toHaveBeenCalled();
   });
+
+  it("sends onboardingCompleted (alone and coalesced with other patches)", async () => {
+    const fetchSettings = vi.fn(async () => createResponse());
+    const updateSettings = vi.fn(async () => createResponse());
+    const coordinator = new StudioSettingsCoordinator({ fetchSettings, updateSettings }, 300);
+
+    coordinator.schedulePatch({ onboardingCompleted: true }, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(updateSettings).toHaveBeenLastCalledWith({ onboardingCompleted: true });
+
+    coordinator.schedulePatch({ onboardingCompleted: true });
+    coordinator.schedulePatch({ activeFloorId: "lobby" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(updateSettings).toHaveBeenLastCalledWith({ activeFloorId: "lobby", onboardingCompleted: true });
+  });
 });
+

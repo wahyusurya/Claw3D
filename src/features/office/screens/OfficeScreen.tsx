@@ -1165,6 +1165,9 @@ export function OfficeScreen({
   const { showOnboarding, completeOnboarding, resetOnboarding } =
     useOnboardingState();
   const [forceShowOnboarding, setForceShowOnboarding] = useState(false);
+  // Server-side onboarding flag (null until settings load) so completion survives
+  // cleared browser storage, private windows and other devices.
+  const [serverOnboardingCompleted, setServerOnboardingCompleted] = useState<boolean | null>(null);
   const activeFloor = useMemo(
     () => getOfficeFloor(resolveActiveOfficeFloorId(activeFloorId)),
     [activeFloorId],
@@ -1183,10 +1186,15 @@ export function OfficeScreen({
     void (async () => {
       try {
         const settings = await settingsCoordinator.loadSettings({ maxAgeMs: 30_000 });
-        if (!settings || cancelled) return;
+        if (cancelled) return;
+        const onboardingDone = settings?.onboardingCompleted === true;
+        setServerOnboardingCompleted(onboardingDone);
+        if (onboardingDone) completeOnboarding();
+        if (!settings) return;
         setActiveFloorId(resolveStudioActiveFloorId(settings));
       } catch (error) {
         if (!cancelled) {
+          setServerOnboardingCompleted(false);
           console.error("Failed to load active floor preference.", error);
         }
       }
@@ -1194,7 +1202,7 @@ export function OfficeScreen({
     return () => {
       cancelled = true;
     };
-  }, [settingsCoordinator]);
+  }, [settingsCoordinator, completeOnboarding]);
 
   // Reset auto-navigate flag when disconnected so the next connection can navigate again.
   useEffect(() => {
@@ -1393,7 +1401,8 @@ export function OfficeScreen({
     voiceId: voiceRepliesPreference.voiceId,
     speed: voiceRepliesPreference.speed,
   });
-  const showOnboardingWizard = showOnboarding || forceShowOnboarding;
+  const showOnboardingWizard =
+    (showOnboarding && serverOnboardingCompleted === false) || forceShowOnboarding;
   const handleOpenOnboarding = useCallback(() => {
     resetOnboarding();
     setCompanyCreatedSignal(0);
@@ -1402,11 +1411,13 @@ export function OfficeScreen({
   }, [resetOnboarding]);
   const handleCompleteOnboarding = useCallback(() => {
     completeOnboarding();
+    setServerOnboardingCompleted(true);
+    settingsCoordinator.schedulePatch({ onboardingCompleted: true }, 0);
     setCompanyCreatedSignal(0);
     setCreatedCompanyName(null);
     setForceShowOnboarding(false);
     setOfficeCameraCenterSignal((current) => current + 1);
-  }, [completeOnboarding]);
+  }, [completeOnboarding, settingsCoordinator]);
 
   const handleAvatarProfileSave = useCallback(
     (agentId: string, profile: AgentAvatarProfile) => {

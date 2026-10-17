@@ -346,6 +346,7 @@ const mergeStudioPatch = (
     return {
       ...(next.gateway !== undefined ? { gateway: mergeGatewayPatch(undefined, next.gateway) } : {}),
       ...(next.activeFloorId !== undefined ? { activeFloorId: next.activeFloorId } : {}),
+      ...(next.onboardingCompleted !== undefined ? { onboardingCompleted: next.onboardingCompleted } : {}),
       ...(next.focused ? { focused: { ...next.focused } } : {}),
       ...(next.avatars ? { avatars: { ...next.avatars } } : {}),
       ...(next.deskAssignments ? { deskAssignments: { ...next.deskAssignments } } : {}),
@@ -380,6 +381,11 @@ const mergeStudioPatch = (
       ? { activeFloorId: next.activeFloorId }
       : current.activeFloorId !== undefined
         ? { activeFloorId: current.activeFloorId }
+        : {}),
+    ...(next.onboardingCompleted !== undefined
+      ? { onboardingCompleted: next.onboardingCompleted }
+      : current.onboardingCompleted !== undefined
+        ? { onboardingCompleted: current.onboardingCompleted }
         : {}),
     ...(focused ? { focused } : {}),
     ...(avatars ? { avatars } : {}),

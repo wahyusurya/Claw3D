@@ -257,6 +257,8 @@ export type StudioSettings = {
   office: Record<string, StudioOfficePreference>;
   standup?: Record<string, StudioStandupPreference>;
   taskBoard?: Record<string, StudioTaskBoardPreference>;
+  /** Set once the viewer finishes or closes the onboarding wizard (shared across browsers). */
+  onboardingCompleted?: boolean;
 };
 
 export type StudioSettingsPublic = Omit<StudioSettings, "gateway" | "office" | "standup"> & {
@@ -278,6 +280,7 @@ export type StudioSettingsPatch = {
   office?: Record<string, StudioOfficePreferencePatch | null>;
   standup?: Record<string, StudioStandupPreferencePatch | null>;
   taskBoard?: Record<string, StudioTaskBoardPreferencePatch | null>;
+  onboardingCompleted?: boolean | null;
 };
 
 const SETTINGS_VERSION = 1 as const;
@@ -1381,6 +1384,8 @@ export const normalizeStudioSettings = (raw: unknown): StudioSettings => {
     office,
     standup,
     taskBoard,
+    // Only present when true so existing settings files/snapshots stay unchanged.
+    ...(raw.onboardingCompleted === true ? { onboardingCompleted: true } : {}),
   };
 };
 
@@ -1627,6 +1632,11 @@ export const mergeStudioSettings = (
     office: nextOffice,
     standup: nextStandup,
     taskBoard: nextTaskBoard,
+    ...((patch.onboardingCompleted === undefined
+      ? current.onboardingCompleted === true
+      : patch.onboardingCompleted === true)
+      ? { onboardingCompleted: true }
+      : {}),
   };
 };
 

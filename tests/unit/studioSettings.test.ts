@@ -516,3 +516,16 @@ describe("studio settings normalization", () => {
     expect(merged.gateway?.lastKnownGood?.token).toBe("stored-token");
   });
 });
+
+describe("onboardingCompleted (server-side onboarding flag)", () => {
+  it("is only present when true and survives merges", async () => {
+    const { normalizeStudioSettings, mergeStudioSettings, defaultStudioSettings } = await import("@/lib/studio/settings");
+    expect("onboardingCompleted" in defaultStudioSettings()).toBe(false);
+    expect("onboardingCompleted" in normalizeStudioSettings({ onboardingCompleted: false })).toBe(false);
+    const done = mergeStudioSettings(defaultStudioSettings(), { onboardingCompleted: true });
+    expect(done.onboardingCompleted).toBe(true);
+    expect(normalizeStudioSettings(JSON.parse(JSON.stringify(done))).onboardingCompleted).toBe(true);
+    expect(mergeStudioSettings(done, { activeFloorId: "lobby" }).onboardingCompleted).toBe(true);
+    expect("onboardingCompleted" in mergeStudioSettings(done, { onboardingCompleted: false })).toBe(false);
+  });
+});
