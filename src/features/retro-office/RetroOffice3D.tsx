@@ -5100,30 +5100,45 @@ export function RetroOffice3D({
   }, [deskActionUid]);
 
   // New Idea 3: show speech bubble based on reply length.
+  // Hide timers are per agent and survive later feed events: clearing them in the effect
+  // cleanup (previous behavior) left a bubble up whenever any other event arrived meanwhile.
+  const speechHideTimersRef = useRef(new Map<string, number>());
+  const lastSpeechEventKeyRef = useRef("");
   useEffect(() => {
-    if (feedEvents.length === 0) return;
     const latest = feedEvents[0];
-    if (!latest) return;
-    if (latest.kind !== "reply") return;
+    if (!latest || latest.kind !== "reply") return;
+    const eventKey = `${latest.id}:${latest.ts}`;
+    if (lastSpeechEventKeyRef.current === eventKey) return;
+    lastSpeechEventKeyRef.current = eventKey;
     const speechBubbleDurationMs = Math.min(
       12_000,
       Math.max(5_500, 2_500 + latest.text.trim().length * 42),
     );
-    const addTimer = window.setTimeout(() => {
+    const timers = speechHideTimersRef.current;
+    const previousTimer = timers.get(latest.id);
+    if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+    window.setTimeout(() => {
       setSpeechAgentIds((prev) => new Set([...prev, latest.id]));
     }, 0);
-    const timer = window.setTimeout(() => {
-      setSpeechAgentIds((prev) => {
-        const next = new Set(prev);
-        next.delete(latest.id);
-        return next;
-      });
-    }, speechBubbleDurationMs);
-    return () => {
-      window.clearTimeout(addTimer);
-      window.clearTimeout(timer);
-    };
+    timers.set(
+      latest.id,
+      window.setTimeout(() => {
+        timers.delete(latest.id);
+        setSpeechAgentIds((prev) => {
+          const next = new Set(prev);
+          next.delete(latest.id);
+          return next;
+        });
+      }, speechBubbleDurationMs),
+    );
   }, [feedEvents]);
+  useEffect(() => {
+    const timers = speechHideTimersRef.current;
+    return () => {
+      for (const timer of timers.values()) window.clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
 
   // E3 Idea 1: emoji mood reactions on feed events.
   useEffect(() => {
