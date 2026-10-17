@@ -19,7 +19,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
@@ -168,6 +168,30 @@ try {
     const stored2 = await apiGet(`/api/sessions/${SID}/messages`);
     const leak = (stored2.data || []).some((m) => (m.content || "").includes("sub-e2e-ok"));
     check("E. sub-agent reply isolated from shared session", !leak);
+
+    // FT. full-tools sub-agent: real toolset via its own private Hermes session,
+    // isolated from the shared session.
+    const ft = await session.send("agents.create", {
+      name: "E2eTools", role: "tester", fullTools: true,
+      systemPrompt: "You are E2eTools, a terse worker agent.",
+    });
+    const ftReply = await chatRoundTrip(session, `agent:${ft.agentId}:main`,
+      "Use the terminal tool to run exactly: echo subtool-7788 — then reply with exactly: agenttools-ok", 300_000);
+    check("FT1. full-tools sub-agent runs real tools", ftReply.includes("agenttools-ok"), ftReply.slice(0, 80));
+    const roster = JSON.parse(readFileSync(`${HOME_DIR}/.hermes/claw3d-agents.json`, "utf8"));
+    const ftEntry = (roster.agents || []).find((a) => a.id === ft.agentId);
+    const ftRows = ftEntry?.sessionApiId
+      ? (await apiGet(`/api/sessions/${ftEntry.sessionApiId}/messages`)).data || [] : [];
+    const toolRan = ftRows.some((m) => m.role === "tool")
+      && ftRows.some((m) => String(m.content || "").includes("subtool-7788"));
+    check("FT2. full-tools tool output recorded", toolRan, `${ftRows.length} rows`);
+    const ftLeak = (await apiGet(`/api/sessions/${SID}/messages`)).data || [];
+    check("FT3. full-tools reply isolated from shared session",
+      !ftLeak.some((m) => String(m.content || "").includes("agenttools-ok")));
+    if (ftEntry?.sessionApiId) {
+      await fetch(`${API}/api/sessions/${ftEntry.sessionApiId}`, { method: "DELETE", headers: apiHeaders });
+    }
+    await session.send("agents.delete", { agentId: ft.agentId });
 
     // F. sessions.reset must not destroy the session
     const reset = await session.send("sessions.reset", { key: "agent:hermes:main" });

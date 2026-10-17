@@ -530,13 +530,43 @@ async function getSharedHistory() {
   return fetchSharedMessages(await resolveSharedSessionId());
 }
 
+// Per-agent Hermes session for full-tools office sub-agents (created lazily, id
+// persisted on the agent roster entry). Never resolves to a Telegram session.
+async function ensureAgentSession(agentId) {
+  const agent = agentRegistry.get(agentId);
+  if (!agent) throw new Error(`Unknown agent: ${agentId}`);
+  if (agent.sessionApiId) return agent.sessionApiId;
+  const slug = (agent.name || agentId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const title = `office-${slug || "agent"}-${Date.now().toString(36)}`;
+  const res = await hermesPost("/api/sessions", sharedSessionCreateBody(title));
+  const payload = await readJsonBody(res);
+  const created = payload?.session?.id;
+  if (!created) throw new Error(extractOpenAiStyleError(payload, "Could not create agent session"));
+  agent.sessionApiId = created;
+  saveAgentsToDisk();
+  console.log(`[hermes-adapter] Agent ${agentId} session: ${created}`);
+  return created;
+}
+
+// Transcript for any agent:* session key — shared (Secretary), per-agent
+// (full-tools workers), or the local text loop (lightweight sub-agents).
+async function historyForKey(key) {
+  const agentId = key.startsWith("agent:") ? key.split(":")[1] : AGENT_ID;
+  if (SHARED_SESSION_ENABLED && agentId === AGENT_ID) return getSharedHistory();
+  const agent = agentRegistry.get(agentId);
+  if (SHARED_SESSION_ENABLED && agent?.fullTools && agent.sessionApiId) {
+    return fetchSharedMessages(agent.sessionApiId);
+  }
+  return getHistory(key);
+}
+
 /**
  * Run one Secretary turn inside the shared Hermes session (SSE).
  * emitDelta receives ACCUMULATED text (same convention as streamOneTurn).
  * @returns {{ text: string, cancelled: boolean }}
  */
-async function runSharedSessionTurn({ userMessage, emitDelta, abortCheck }) {
-  const sessionId = await resolveSharedSessionId();
+async function runSharedSessionTurn({ sessionId: forcedSessionId, userMessage, emitDelta, abortCheck }) {
+  const sessionId = forcedSessionId || await resolveSharedSessionId();
   const res = await hermesPost(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, { input: userMessage });
   if (res.statusCode >= 400) {
     res.resume();
@@ -900,6 +930,59 @@ async function pollSharedSession() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Heartbeats: an office agent whose HEARTBEAT.md contains an "every: <n>m|h" line gets its
+// instructions sent as a chat turn on that schedule. Results are broadcast to every office
+// client like a normal reply. One heartbeat runs at a time; busy agents are skipped.
+// Disable all with CLAW3D_HEARTBEATS=off.
+// ---------------------------------------------------------------------------
+
+const HEARTBEATS_ENABLED = (process.env.CLAW3D_HEARTBEATS || "on") !== "off";
+const HEARTBEAT_TICK_MS = 60_000;
+const heartbeatLastRunAt = new Map(); // agentId -> ms
+let heartbeatRunning = false;
+
+function parseHeartbeat(text) {
+  if (typeof text !== "string") return null;
+  const match = /^\s*every\s*:\s*(\d+)\s*(m|min|minutes?|h|hours?)\s*$/im.exec(text);
+  if (!match) return null;
+  const amount = parseInt(match[1], 10);
+  const intervalMs = amount * (match[2].startsWith("h") ? 3_600_000 : 60_000);
+  if (!Number.isFinite(intervalMs) || intervalMs < 5 * 60_000) return null; // floor: 5 minutes
+  const instructions = text.replace(match[0], "").replace(/^#.*$/gm, "").trim();
+  return instructions ? { intervalMs, instructions } : null;
+}
+
+async function runDueHeartbeat() {
+  if (!HEARTBEATS_ENABLED || heartbeatRunning) return;
+  const now = Date.now();
+  for (const agent of agentRegistry.values()) {
+    if (agent.id === AGENT_ID) continue;
+    const heartbeat = parseHeartbeat(agentFiles.get(`${agent.id}/HEARTBEAT.md`));
+    if (!heartbeat) continue;
+    if (!heartbeatLastRunAt.has(agent.id)) { heartbeatLastRunAt.set(agent.id, now); continue; } // no burst on startup
+    if (now - heartbeatLastRunAt.get(agent.id) < heartbeat.intervalMs) continue;
+    const sessionKey = `agent:${agent.id}:${MAIN_KEY}`;
+    if ([...activeRuns.values()].some((run) => run.sessionKey === sessionKey)) continue;
+    heartbeatLastRunAt.set(agent.id, now);
+    heartbeatRunning = true;
+    const runId = `heartbeat-${agent.id}-${now}`;
+    console.log(`[hermes-adapter] Heartbeat: ${agent.name} (${agent.id})`);
+    try {
+      await handleMethod("chat.send", {
+        sessionKey, idempotencyKey: runId,
+        message: `[Heartbeat ${new Date(now).toISOString()}]\n${heartbeat.instructions}`,
+      }, `hb-${randomId()}`, (frame) => broadcastEvent(frame));
+      // chat.send runs the turn asynchronously; wait for it so heartbeats never overlap
+      const deadline = Date.now() + 15 * 60_000;
+      while (activeRuns.has(runId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1000));
+    } finally {
+      heartbeatRunning = false;
+    }
+    return; // one per tick
+  }
+}
+
 function broadcastEvent(frame) {
   for (const fn of activeSendEventFns) {
     try { fn(frame); } catch { /* ignore */ }
@@ -948,6 +1031,35 @@ async function execSpawnAgent(args) {
   return JSON.stringify({ ok: true, agent_id: newId, name, role });
 }
 
+// ---------------------------------------------------------------------------
+// Agent definition files -> system prompt. The office editor stores IDENTITY/SOUL/AGENTS/
+// USER/TOOLS/MEMORY per agent; office agents (not the orchestrator, which has its own
+// built-in prompt) are prompted from them. Empty or untouched templates are skipped.
+// ---------------------------------------------------------------------------
+
+const AGENT_PROMPT_FILES = ["IDENTITY.md", "SOUL.md", "AGENTS.md", "USER.md", "TOOLS.md", "MEMORY.md"];
+
+function isTemplateOnly(text) {
+  // headings, "- Field:" placeholders and blank lines carry no instructions
+  return text.replace(/^#.*$/gm, "").replace(/^\s*-\s*[^:\n]+:\s*$/gm, "").trim() === "";
+}
+
+function composeAgentSystemPrompt(agent) {
+  if (!agent) return "";
+  if (agent.id === AGENT_ID) return agent.systemPrompt || "";
+  const sections = [];
+  for (const name of AGENT_PROMPT_FILES) {
+    const content = agentFiles.get(`${agent.id}/${name}`);
+    if (typeof content === "string" && !isTemplateOnly(content)) sections.push(content.trim());
+  }
+  if (sections.length === 0) return agent.systemPrompt || "";
+  return [
+    `You are ${agent.name} (agent id: ${agent.id}), a member of the user's Claw3D office team. ` +
+      "Your definition files follow; they override any generic assistant persona.",
+    ...sections,
+  ].join("\n\n---\n\n");
+}
+
 async function execDelegateTask(args) {
   const targetId = typeof args.agent_id === "string" ? args.agent_id.trim() : "";
   const message = typeof args.message === "string" ? args.message.trim() : "";
@@ -961,7 +1073,8 @@ async function execDelegateTask(args) {
   const model = agent.settings.model || HERMES_MODEL;
 
   // Build messages for sub-agent
-  const systemMsg = agent.systemPrompt ? [{ role: "system", content: agent.systemPrompt }] : [];
+  const systemPrompt = composeAgentSystemPrompt(agent);
+  const systemMsg = systemPrompt ? [{ role: "system", content: systemPrompt }] : [];
   const contextHistory = agent.settings.wipe ? [] : [...history];
   const messages = [...systemMsg, ...contextHistory, { role: "user", content: message }];
 
@@ -1110,7 +1223,8 @@ async function executeToolCall(tc, sendEvent) {
 
 async function runAgenticLoop({ sessionKey, agentId, userMessage, model, tools, emitDelta, abortCheck, sendEvent }) {
   const agent = agentRegistry.get(agentId);
-  const systemMsg = agent?.systemPrompt ? [{ role: "system", content: agent.systemPrompt }] : [];
+  const systemPrompt = composeAgentSystemPrompt(agent);
+  const systemMsg = systemPrompt ? [{ role: "system", content: systemPrompt }] : [];
   const history = getHistory(sessionKey);
   const contextHistory = (agent?.settings?.wipe) ? [] : [...history];
   let messages = [...systemMsg, ...contextHistory, { role: "user", content: userMessage }];
@@ -1188,6 +1302,7 @@ async function handleMethod(method, params, id, sendEvent) {
         id: agent.id, name: agent.name, workspace: agent.workspace,
         identity: { name: agent.name, emoji: "🤖" },
         role: agent.role,
+        fullTools: agent.fullTools === true,
       }));
       return resOk(id, { defaultId: AGENT_ID, mainKey: MAIN_KEY, agents: allAgents });
     }
@@ -1200,6 +1315,7 @@ async function handleMethod(method, params, id, sendEvent) {
         ? p.workspace : `${HOME}/.hermes/workspace-${slug}`;
       agentRegistry.set(newId, {
         id: newId, name: agentName, workspace,
+        fullTools: p.fullTools === true,
         role: (typeof p.role === "string") ? p.role.trim() : "",
         systemPrompt: (typeof p.systemPrompt === "string" && p.systemPrompt.trim())
           ? p.systemPrompt.trim() : `You are ${agentName}.`,
@@ -1227,6 +1343,7 @@ async function handleMethod(method, params, id, sendEvent) {
         if (typeof p.workspace === "string" && p.workspace.trim()) existing.workspace = p.workspace.trim();
         if (typeof p.role === "string") existing.role = p.role.trim();
         if (typeof p.systemPrompt === "string" && p.systemPrompt.trim()) existing.systemPrompt = p.systemPrompt.trim();
+        if (typeof p.fullTools === "boolean") existing.fullTools = p.fullTools;
         saveAgentsToDisk();
       }
       return resOk(id, { ok: true, removedBindings: 0 });
@@ -1340,6 +1457,17 @@ async function handleMethod(method, params, id, sendEvent) {
         return resOk(id, { ok: true,
           note: "Shared chat follows the Telegram session; use /new in Telegram to start fresh there." });
       }
+      const subAgentForKey = key.startsWith("agent:") ? agentRegistry.get(key.split(":")[1]) : null;
+      if (SHARED_SESSION_ENABLED && subAgentForKey?.fullTools && subAgentForKey.sessionApiId) {
+        // Full-tools sub-agent: wipe its private Hermes session (recreated on next chat).
+        try {
+          const del = await hermesDelete(`/api/sessions/${encodeURIComponent(subAgentForKey.sessionApiId)}`);
+          del.resume();
+        } catch { /* ignore */ }
+        subAgentForKey.sessionApiId = null;
+        saveAgentsToDisk();
+        return resOk(id, { ok: true });
+      }
       clearHistory(key);
       return resOk(id, { ok: true });
     }
@@ -1381,19 +1509,28 @@ async function handleMethod(method, params, id, sendEvent) {
         };
 
         try {
-          // Secretary (orchestrator) turns run inside the shared Hermes session so the
-          // office chat and the Telegram bot share one conversation. Sub-agents keep
-          // the local agentic loop below and never enter the shared session.
-          if (isOrchestrator && SHARED_SESSION_ENABLED) {
-            officeSharedTurns += 1;
+          // Secretary (orchestrator) turns run in the shared Hermes session (one thread
+          // with Telegram). fullTools sub-agents run in their own private Hermes session
+          // with the complete toolset (isolated from Telegram). Other sub-agents keep the
+          // local text-only loop below and never enter a Hermes session.
+          if (SHARED_SESSION_ENABLED && (isOrchestrator || agent?.fullTools)) {
+            // Only the Secretary's own turns touch the shared transcript; worker turns must not
+            // pause the Telegram live sync (they can run for many minutes).
+            if (isOrchestrator) officeSharedTurns += 1;
             let turn;
             try {
+              const turnSessionId = isOrchestrator ? undefined : await ensureAgentSession(sessionAgentId);
+              const persona = isOrchestrator ? "" : (composeAgentSystemPrompt(agent) || "");
               turn = await runSharedSessionTurn({
-                userMessage, emitDelta: onTextDelta, abortCheck: () => aborted,
+                sessionId: turnSessionId,
+                userMessage: persona ? `${persona}\n\n---\n\n${userMessage}` : userMessage,
+                emitDelta: onTextDelta, abortCheck: () => aborted,
               });
             } finally {
-              officeSharedTurns -= 1;
-              sharedSyncFingerprint = null; // re-baseline so live sync doesn't echo this office turn
+              if (isOrchestrator) {
+                officeSharedTurns -= 1;
+                sharedSyncFingerprint = null; // re-baseline so live sync doesn't echo this office turn
+              }
             }
             if (turn.cancelled || aborted) {
               emitChat("aborted", {});
@@ -1460,13 +1597,10 @@ async function handleMethod(method, params, id, sendEvent) {
 
     case "chat.history": {
       const histKey = typeof p.sessionKey === "string" ? p.sessionKey : MAIN_SESSION_KEY;
-      if (SHARED_SESSION_ENABLED && histKey === MAIN_SESSION_KEY) {
-        try {
-          const messages = await getSharedHistory();
-          return resOk(id, { sessionKey: histKey, messages });
-        } catch (err) {
-          console.warn("[hermes-adapter] Shared history fetch failed:", sanitizeErrorMessage(err));
-        }
+      try {
+        return resOk(id, { sessionKey: histKey, messages: await historyForKey(histKey) });
+      } catch (err) {
+        console.warn("[hermes-adapter] History fetch failed:", sanitizeErrorMessage(err));
       }
       return resOk(id, { sessionKey: histKey, messages: getHistory(histKey) });
     }
@@ -1603,6 +1737,14 @@ async function handleMethod(method, params, id, sendEvent) {
 // ---------------------------------------------------------------------------
 
 function startAdapter() {
+  if (HEARTBEATS_ENABLED) {
+    setInterval(() => {
+      runDueHeartbeat().catch((err) => {
+        heartbeatRunning = false;
+        console.warn("[hermes-adapter] Heartbeat failed:", sanitizeErrorMessage(err));
+      });
+    }, HEARTBEAT_TICK_MS);
+  }
   if (SHARED_SESSION_ENABLED) {
     setInterval(() => {
       pollSharedSession().catch((err) =>
