@@ -60,56 +60,6 @@ function FramedPicture({
   );
 }
 
-function UsaFlagArt() {
-  const flagWidth = 0.52;
-  const flagHeight = 0.3;
-  const stripeHeight = flagHeight / 13;
-  const cantonWidth = flagWidth * 0.4;
-  const cantonHeight = stripeHeight * 7;
-
-  return (
-    <>
-      {Array.from({ length: 13 }).map((_, index) => (
-        <mesh
-          key={`usa-stripe-${index}`}
-          position={[0, flagHeight / 2 - stripeHeight / 2 - index * stripeHeight, 0]}
-        >
-          <planeGeometry args={[flagWidth, stripeHeight]} />
-          <meshBasicMaterial
-            color={index % 2 === 0 ? "#b22234" : "#ffffff"}
-            side={2}
-          />
-        </mesh>
-      ))}
-      <mesh
-        position={[
-          -flagWidth / 2 + cantonWidth / 2,
-          flagHeight / 2 - cantonHeight / 2,
-          0.001,
-        ]}
-      >
-        <planeGeometry args={[cantonWidth, cantonHeight]} />
-        <meshBasicMaterial color="#3c3b6e" side={2} />
-      </mesh>
-      {Array.from({ length: 5 }).map((_, row) =>
-        Array.from({ length: 6 }).map((__, column) => (
-          <mesh
-            key={`usa-star-${row}-${column}`}
-            position={[
-              -flagWidth / 2 + 0.04 + column * 0.025,
-              flagHeight / 2 - 0.03 - row * 0.035,
-              0.002,
-            ]}
-          >
-            <circleGeometry args={[0.0045, 6]} />
-            <meshBasicMaterial color="#ffffff" side={2} />
-          </mesh>
-        )),
-      )}
-    </>
-  );
-}
-
 function BrazilFlagArt() {
   return (
     <>
@@ -699,15 +649,10 @@ export const WallPictures = memo(function WallPictures({
   const westX = localCenterX - localWidth / 2 + 0.07;
   const eastX = localCenterX + localWidth / 2 - 0.07;
   const pictureY = 0.64;
-  const [localFlagPoleX, , localFlagPoleZ] = toWorld(
-    180,
-    LOCAL_OFFICE_CANVAS_HEIGHT - 110,
-  );
   const [remoteFlagPoleX, , remoteFlagPoleZ] = toWorld(
     180,
     REMOTE_OFFICE_ZONE.maxY - 110,
   );
-  const localFlagPolePosition: [number, number, number] = [localFlagPoleX, 0, localFlagPoleZ];
   const remoteFlagPolePosition: [number, number, number] = [
     remoteFlagPoleX,
     0,
@@ -716,11 +661,6 @@ export const WallPictures = memo(function WallPictures({
 
   return (
     <group>
-      <OfficeFlagPole
-        position={localFlagPolePosition}
-        rotY={0.32}
-        art={<UsaFlagArt />}
-      />
       {showRemoteOffice ? (
         <OfficeFlagPole
           position={remoteFlagPolePosition}
