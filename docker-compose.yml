@@ -29,6 +29,10 @@ services:
       HERMES_AGENT_NAME: ${CLAW3D_AGENT_NAME:-Claw3D}
       HERMES_SKILLS_DIR: /hermes-skills
       HERMES_SKILLS_HOST_DIR: ${CLAW3D_HERMES_SKILLS_DIR:?set CLAW3D_HERMES_SKILLS_DIR in .env}
+      # on = the main agent's office chat shares one Hermes session with its Telegram DM
+      CLAW3D_SHARED_SESSION: ${CLAW3D_SHARED_SESSION:-off}
+      # model for sessions the adapter creates (Hermes needs a provider-backed model name)
+      CLAW3D_SHARED_SESSION_MODEL: ${CLAW3D_SHARED_SESSION_MODEL:-}
     volumes:
       - adapter-data:/data
       - ${CLAW3D_HERMES_SKILLS_DIR}:/hermes-skills:ro

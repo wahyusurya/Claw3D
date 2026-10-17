@@ -401,6 +401,206 @@ async function readJsonBody(res) {
   return JSON.parse(raw);
 }
 
+// ---------------------------------------------------------------------------
+// Shared session — the Secretary's conversation lives in a real Hermes session
+// so the Claw3D office chat and the Telegram bot share ONE thread.
+//
+// Resolution order for the shared session id:
+//   1. CLAW3D_SHARED_SESSION_ID env (explicit pin)
+//   2. pinned state file (~/.hermes/claw3d-shared-session.json) — e.g. after an
+//      office-side "new chat", which pins a fresh adapter-owned session
+//   3. newest Telegram session of this profile (office mirrors the DM)
+//   4. create a fresh adapter-owned session and pin it
+//
+// Sub-agents never use the shared session — their chats stay local so they
+// cannot reply in Telegram. Opt-in: CLAW3D_SHARED_SESSION=on (default off = local history).
+// ---------------------------------------------------------------------------
+
+const SHARED_SESSION_ENABLED = (process.env.CLAW3D_SHARED_SESSION || "off") === "on";
+// Model for adapter-created shared sessions. Hermes' session API otherwise falls back to the
+// API server's own model name, which may not map to a configured provider — set this to the
+// profile's real model (e.g. a 9router/custom model name).
+const SHARED_SESSION_MODEL = (process.env.CLAW3D_SHARED_SESSION_MODEL || "").trim();
+const sharedSessionCreateBody = (title) => (SHARED_SESSION_MODEL ? { title, model: SHARED_SESSION_MODEL } : { title });
+const SHARED_SESSION_FILE = path.join(HOME, ".hermes", "claw3d-shared-session.json");
+
+function readSharedSessionState() {
+  try {
+    const data = JSON.parse(fs.readFileSync(SHARED_SESSION_FILE, "utf8"));
+    if (data && typeof data === "object") return data;
+  } catch { /* no state yet */ }
+  return {};
+}
+
+function writeSharedSessionState(state) {
+  try {
+    fs.mkdirSync(path.dirname(SHARED_SESSION_FILE), { recursive: true });
+    fs.writeFileSync(SHARED_SESSION_FILE, JSON.stringify(state, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[hermes-adapter] Could not save shared session state:", sanitizeErrorMessage(err));
+  }
+}
+
+function hermesDelete(pathName) {
+  return new Promise((resolve, reject) => {
+    const urlStr = HERMES_API_URL + pathName;
+    let url;
+    try { url = new URL(urlStr); } catch { reject(new Error(`Invalid URL: ${urlStr}`)); return; }
+    const transport = url.protocol === "https:" ? https : http;
+    const headers = {};
+    if (HERMES_API_KEY) headers["Authorization"] = `Bearer ${HERMES_API_KEY}`;
+    const req = transport.request(
+      { hostname: url.hostname, port: url.port ? parseInt(url.port, 10) : (url.protocol === "https:" ? 443 : 80),
+        path: url.pathname + (url.search || ""), method: "DELETE", headers },
+      resolve
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function sharedSessionTitle() {
+  return `Secretary office chat ${new Date().toISOString().slice(0, 19).replace("T", " ")} ${randomId().slice(0, 4)}`;
+}
+
+let sharedSessionMemo = { id: "", at: 0 };
+
+async function resolveSharedSessionId() {
+  const envId = (process.env.CLAW3D_SHARED_SESSION_ID || "").trim();
+  if (envId) return envId;
+  const now = Date.now();
+  if (sharedSessionMemo.id && now - sharedSessionMemo.at < 10_000) return sharedSessionMemo.id;
+
+  const state = readSharedSessionState();
+  if (state.id && state.pinned) {
+    sharedSessionMemo = { id: state.id, at: now };
+    return state.id;
+  }
+
+  // Follow the newest Telegram session so office chat == Telegram DM.
+  try {
+    const res = await hermesGet("/api/sessions?source=telegram&limit=20");
+    if (res.statusCode < 400) {
+      const payload = await readJsonBody(res);
+      const sessions = Array.isArray(payload?.data) ? payload.data : [];
+      const newest = sessions
+        .filter((s) => typeof s?.id === "string" && s.id)
+        .sort((a, b) => ((b.last_active || b.started_at || 0) - (a.last_active || a.started_at || 0)))[0];
+      if (newest) {
+        sharedSessionMemo = { id: newest.id, at: now };
+        return newest.id;
+      }
+    } else {
+      res.resume();
+    }
+  } catch (err) {
+    console.warn("[hermes-adapter] Shared-session telegram lookup failed:", sanitizeErrorMessage(err));
+  }
+
+  if (state.id) {
+    sharedSessionMemo = { id: state.id, at: now };
+    return state.id;
+  }
+
+  const title = sharedSessionTitle();
+  const res = await hermesPost("/api/sessions", sharedSessionCreateBody(title));
+  const payload = await readJsonBody(res);
+  const created = payload?.session?.id;
+  if (!created) throw new Error(extractOpenAiStyleError(payload, "Could not create shared session"));
+  writeSharedSessionState({ id: created, pinned: true, owned: true, title });
+  sharedSessionMemo = { id: created, at: now };
+  console.log(`[hermes-adapter] Created shared session ${created}`);
+  return created;
+}
+
+async function fetchSharedMessages(sessionId) {
+  const res = await hermesGet(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+  if (res.statusCode >= 400) {
+    res.resume();
+    throw new Error(`Hermes sessions API HTTP ${res.statusCode}`);
+  }
+  const payload = await readJsonBody(res);
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  return rows
+    .filter((m) => (m?.role === "user" || m?.role === "assistant") && typeof m?.content === "string" && m.content)
+    .map((m) => ({ role: m.role, content: m.content }));
+}
+
+async function getSharedHistory() {
+  return fetchSharedMessages(await resolveSharedSessionId());
+}
+
+/**
+ * Run one Secretary turn inside the shared Hermes session (SSE).
+ * emitDelta receives ACCUMULATED text (same convention as streamOneTurn).
+ * @returns {{ text: string, cancelled: boolean }}
+ */
+async function runSharedSessionTurn({ userMessage, emitDelta, abortCheck }) {
+  const sessionId = await resolveSharedSessionId();
+  const res = await hermesPost(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, { input: userMessage });
+  if (res.statusCode >= 400) {
+    res.resume();
+    throw new Error(`Hermes session chat HTTP ${res.statusCode}`);
+  }
+
+  let runId = "";
+  let finalText = "";
+  let acc = "";
+  let cancelled = false;
+  let failedMessage = "";
+  let eventName = "";
+  let buffer = "";
+
+  await new Promise((resolve, reject) => {
+    res.on("data", (chunk) => {
+      if (abortCheck && abortCheck()) {
+        res.destroy();
+        if (runId) hermesPost(`/v1/runs/${runId}/stop`, {}).catch(() => {});
+        cancelled = true;
+        return;
+      }
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const rawLine of lines) {
+        const line = rawLine.trimEnd();
+        if (!line || line.startsWith(":")) continue; // SSE keepalive comments
+        if (line.startsWith("event: ")) { eventName = line.slice(7).trim(); continue; }
+        if (!line.startsWith("data: ")) continue;
+        let data;
+        try { data = JSON.parse(line.slice(6)); } catch { continue; }
+        if (data?.run_id) runId = data.run_id;
+        if (eventName === "assistant.delta") {
+          const piece = typeof data.delta === "string" ? data.delta
+            : typeof data.text === "string" ? data.text
+            : typeof data.content === "string" ? data.content : "";
+          if (piece) {
+            acc += piece;
+            if (emitDelta) emitDelta(acc);
+          }
+        } else if (eventName === "tool.started") {
+          const toolName = data.name || data.tool_name || data.tool || "tool";
+          if (emitDelta) emitDelta((acc ? acc + "\n\n" : "") + `Executing: ${toolName}…`);
+        } else if (eventName === "assistant.completed") {
+          if (typeof data.content === "string" && data.content) finalText = data.content;
+        } else if (eventName === "run.failed") {
+          failedMessage = typeof data.error === "string" ? data.error
+            : typeof data.message === "string" ? data.message
+            : "Shared session run failed";
+        } else if (eventName === "run.cancelled") {
+          cancelled = true;
+        }
+      }
+    });
+    res.on("end", resolve);
+    res.on("error", reject);
+  });
+
+  if (cancelled) return { text: finalText || acc, cancelled: true };
+  if (failedMessage) throw new Error(failedMessage);
+  return { text: finalText || acc, cancelled: false };
+}
+
 function sanitizeErrorMessage(error) {
   if (!error) return "Unknown error";
   if (typeof error === "string") return redactSecrets(error);
@@ -952,7 +1152,9 @@ async function handleMethod(method, params, id, sendEvent) {
         ? p.workspace : `${HOME}/.hermes/workspace-${slug}`;
       agentRegistry.set(newId, {
         id: newId, name: agentName, workspace,
-        role: "", systemPrompt: `You are ${agentName}.`,
+        role: (typeof p.role === "string") ? p.role.trim() : "",
+        systemPrompt: (typeof p.systemPrompt === "string" && p.systemPrompt.trim())
+          ? p.systemPrompt.trim() : `You are ${agentName}.`,
         settings: { wipe: false, continuity: true, model: HERMES_MODEL },
       });
       saveAgentsToDisk();
@@ -976,6 +1178,7 @@ async function handleMethod(method, params, id, sendEvent) {
         if (typeof p.name === "string" && p.name.trim()) existing.name = p.name.trim();
         if (typeof p.workspace === "string" && p.workspace.trim()) existing.workspace = p.workspace.trim();
         if (typeof p.role === "string") existing.role = p.role.trim();
+        if (typeof p.systemPrompt === "string" && p.systemPrompt.trim()) existing.systemPrompt = p.systemPrompt.trim();
         saveAgentsToDisk();
       }
       return resOk(id, { ok: true, removedBindings: 0 });
@@ -1007,9 +1210,14 @@ async function handleMethod(method, params, id, sendEvent) {
     // --- Sessions -----------------------------------------------------------
 
     case "sessions.list": {
+      let sharedMessages = null;
+      if (SHARED_SESSION_ENABLED) {
+        try { sharedMessages = await getSharedHistory(); } catch { sharedMessages = null; }
+      }
       const sessions = [...agentRegistry.values()].map((agent) => {
         const sessionKey = `agent:${agent.id}:${MAIN_KEY}`;
-        const history = getHistory(sessionKey);
+        const history = (SHARED_SESSION_ENABLED && agent.id === AGENT_ID && sharedMessages)
+          ? sharedMessages : getHistory(sessionKey);
         const settings = sessionSettings.get(sessionKey) || {};
         return {
           key: sessionKey, agentId: agent.id,
@@ -1027,8 +1235,13 @@ async function handleMethod(method, params, id, sendEvent) {
       const keys = Array.isArray(p.keys) ? p.keys : [];
       const limit = typeof p.limit === "number" ? p.limit : 8;
       const maxChars = typeof p.maxChars === "number" ? p.maxChars : 240;
+      let sharedMessages = null;
+      if (SHARED_SESSION_ENABLED && keys.includes(MAIN_SESSION_KEY)) {
+        try { sharedMessages = await getSharedHistory(); } catch { sharedMessages = null; }
+      }
       const previews = keys.map((key) => {
-        const history = getHistory(key);
+        const history = (SHARED_SESSION_ENABLED && key === MAIN_SESSION_KEY && sharedMessages)
+          ? sharedMessages : getHistory(key);
         if (history.length === 0) return { key, status: "empty", items: [] };
         const items = history.slice(-limit).map((msg) => ({
           role: msg.role === "assistant" ? "assistant" : "user",
@@ -1057,6 +1270,28 @@ async function handleMethod(method, params, id, sendEvent) {
 
     case "sessions.reset": {
       const key = typeof p.key === "string" ? p.key : MAIN_SESSION_KEY;
+      if (SHARED_SESSION_ENABLED && key === MAIN_SESSION_KEY) {
+        const state = readSharedSessionState();
+        if (state.pinned && state.id && state.owned) {
+          // Adapter-owned shared session: delete and create a fresh pinned one.
+          try {
+            const del = await hermesDelete(`/api/sessions/${encodeURIComponent(state.id)}`);
+            del.resume();
+          } catch { /* ignore */ }
+          const title = sharedSessionTitle();
+          const createdRes = await hermesPost("/api/sessions", sharedSessionCreateBody(title));
+          const createdPayload = await readJsonBody(createdRes);
+          const created = createdPayload?.session?.id;
+          if (!created) return resErr(id, "shared_reset_failed",
+            extractOpenAiStyleError(createdPayload, "Could not create shared session"));
+          writeSharedSessionState({ id: created, pinned: true, owned: true, title });
+          sharedSessionMemo = { id: created, at: Date.now() };
+          return resOk(id, { ok: true, sharedSessionId: created });
+        }
+        // Shared chat follows a Telegram session — never destroy the user's DM session.
+        return resOk(id, { ok: true,
+          note: "Shared chat follows the Telegram session; use /new in Telegram to start fresh there." });
+      }
       clearHistory(key);
       return resOk(id, { ok: true });
     }
@@ -1098,6 +1333,25 @@ async function handleMethod(method, params, id, sendEvent) {
         };
 
         try {
+          // Secretary (orchestrator) turns run inside the shared Hermes session so the
+          // office chat and the Telegram bot share one conversation. Sub-agents keep
+          // the local agentic loop below and never enter the shared session.
+          if (isOrchestrator && SHARED_SESSION_ENABLED) {
+            const turn = await runSharedSessionTurn({
+              userMessage, emitDelta: onTextDelta, abortCheck: () => aborted,
+            });
+            if (turn.cancelled || aborted) {
+              emitChat("aborted", {});
+            } else {
+              emitChat("final", { stopReason: "end_turn",
+                message: { role: "assistant", content: turn.text } });
+              sendEvent({ type: "event", event: "presence", seq: seqCounter++,
+                payload: { sessions: { recent: [{ key: sessionKey, updatedAt: Date.now() }],
+                  byAgent: [{ agentId: sessionAgentId, recent: [{ key: sessionKey, updatedAt: Date.now() }] }] } } });
+            }
+            return;
+          }
+
           // Only the orchestrator gets team management tools
           const tools = isOrchestrator ? TEAM_TOOLS : [];
 
@@ -1151,6 +1405,14 @@ async function handleMethod(method, params, id, sendEvent) {
 
     case "chat.history": {
       const histKey = typeof p.sessionKey === "string" ? p.sessionKey : MAIN_SESSION_KEY;
+      if (SHARED_SESSION_ENABLED && histKey === MAIN_SESSION_KEY) {
+        try {
+          const messages = await getSharedHistory();
+          return resOk(id, { sessionKey: histKey, messages });
+        } catch (err) {
+          console.warn("[hermes-adapter] Shared history fetch failed:", sanitizeErrorMessage(err));
+        }
+      }
       return resOk(id, { sessionKey: histKey, messages: getHistory(histKey) });
     }
 
@@ -1374,6 +1636,13 @@ function startAdapter() {
     console.log(`[hermes-adapter] ✓ Forwarding to Hermes API at ${HERMES_API_URL}`);
     console.log(`[hermes-adapter] ✓ Model: ${HERMES_MODEL}`);
     console.log(`[hermes-adapter] ✓ Multi-agent orchestration: ENABLED`);
+    if (SHARED_SESSION_ENABLED) {
+      resolveSharedSessionId()
+        .then((sid) => console.log(`[hermes-adapter] ✓ Shared session (office↔Telegram): ${sid}`))
+        .catch((err) => console.warn("[hermes-adapter] Shared session resolve failed:", sanitizeErrorMessage(err)));
+    } else {
+      console.log("[hermes-adapter] Shared session: OFF (local history)");
+    }
     console.log(`\nOpen Claw3D → ws://localhost:${ADAPTER_PORT}\n`);
   });
 
