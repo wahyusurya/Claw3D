@@ -1,4 +1,5 @@
 import * as childProcess from "node:child_process";
+import { loadActiveProject } from "@/lib/office/activeProjectStore";
 
 export type GitHubAuthState = "ready" | "missing-gh" | "unauthenticated";
 
@@ -473,15 +474,32 @@ export const loadGitHubDashboard = (): GitHubDashboardResponse => {
     };
   }
 
+  // Scope everything to the project the team is working on; nothing to review without one.
+  const activeProject = loadActiveProject().project;
+  if (!activeProject) {
+    return {
+      ready: true,
+      authState: auth.authState,
+      viewerLogin: auth.viewerLogin,
+      currentRepoSlug: null,
+      currentRepoPullRequests: [],
+      reviewRequests: [],
+      authoredPullRequests: [],
+      message: "No active project. The review shows pull requests of the project the team is working on.",
+    };
+  }
+
   return {
     ready: true,
     authState: auth.authState,
     viewerLogin: auth.viewerLogin,
-    currentRepoSlug,
-    currentRepoPullRequests: currentRepoSlug ? loadRepoPullRequests(currentRepoSlug) : [],
+    currentRepoSlug: activeProject,
+    currentRepoPullRequests: loadRepoPullRequests(activeProject),
     reviewRequests: loadSearchResults([
       "search",
       "prs",
+      "--repo",
+      activeProject,
       "--review-requested",
       "@me",
       "--state",
@@ -494,6 +512,8 @@ export const loadGitHubDashboard = (): GitHubDashboardResponse => {
     authoredPullRequests: loadSearchResults([
       "search",
       "prs",
+      "--repo",
+      activeProject,
       "--author",
       "@me",
       "--state",

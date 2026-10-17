@@ -93,6 +93,7 @@ const normalizeTaskRecord = (value: unknown): SharedTaskRecord | null => {
     notes: normalizeStringArray(record.notes),
     isArchived: Boolean(record.isArchived),
     isInferred: false,
+    project: trimString(record.project) || null,
     history: Array.isArray(record.history)
       ? record.history
           .map((entry) => normalizeHistoryEntry(entry))

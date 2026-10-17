@@ -23,6 +23,9 @@
  *   memory add <agentId> <note...>   Append a dated note to the agent's MEMORY.md (capped).
  *   meeting start <topic> <agentId...>   Start the office meeting (agents gather in 3D).
  *   meeting end                      Complete the current office meeting.
+ *   project get                      Show the active project (scopes GitHub review + Kanban).
+ *   project set <owner/repo>         Set the project the team is working on.
+ *   project clear                    No active project (review + Kanban hidden).
  *
  * Exit codes: 0 ok, 1 error, 2 aborted/cancelled.
  */
@@ -147,7 +150,7 @@ async function studioFetch(apiPath, method, body) {
   const response = await fetch(`http://${host}:${port}${apiPath}`, {
     method,
     headers: { "Content-Type": "application/json", Cookie: `studio_access=${token}` },
-    body: JSON.stringify(body),
+    body: method === "GET" ? undefined : JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `studio ${apiPath} HTTP ${response.status}`);
@@ -259,6 +262,21 @@ async function run() {
       } else {
         fail("meeting subcommand must be start|end");
       }
+    } else if (command === "project") {
+      if (sub === "get") {
+        const res = await studioFetch("/api/office/project", "GET");
+        console.log(res.project ?? "(none)");
+      } else if (sub === "set") {
+        if (!rest[0]) fail("project set requires <owner/repo>");
+        const res = await studioFetch("/api/office/project", "PUT", { project: rest[0] });
+        console.log(`active project: ${res.project}`);
+      } else if (sub === "clear") {
+        await studioFetch("/api/office/project", "PUT", { project: null });
+        console.log("active project cleared");
+      } else {
+        fail("project subcommand must be get|set|clear");
+      }
+      finish(0);
     } else {
       fail(`unknown command: ${command}`);
     }

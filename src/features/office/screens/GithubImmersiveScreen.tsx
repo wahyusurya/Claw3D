@@ -459,7 +459,7 @@ export function GithubImmersiveScreen({
           {reviewMessage}
         </div>
       ) : null}
-      {dashboard && !dashboard.ready && dashboard.message ? (
+      {dashboard?.message ? (
         <div className="mx-6 mt-4 rounded-2xl border border-amber-300/16 bg-amber-300/10 px-4 py-3 text-sm text-amber-100">
           {dashboard.message}
         </div>

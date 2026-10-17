@@ -37,6 +37,8 @@ export type TaskBoardCard = {
   notes: string[];
   isArchived: boolean;
   isInferred: boolean;
+  /** GitHub "owner/repo" this task belongs to; the board only shows the active project's tasks. */
+  project?: string | null;
 };
 
 export type TaskBoardPreference = {

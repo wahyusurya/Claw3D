@@ -6,6 +6,7 @@ import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { AgentState } from "@/features/agents/state/store";
 import type { CronJobSummary } from "@/lib/cron/types";
 import type { TaskBoardCard, TaskBoardStatus } from "@/features/office/tasks/types";
+import { useActiveProject } from "@/features/office/tasks/useActiveProject";
 
 const STATUS_LABELS: Record<TaskBoardStatus, string> = {
   todo: "Todo",
@@ -88,6 +89,7 @@ export function TaskBoardView({
   onDeleteCard: (cardId: string) => void;
   onRefreshCronJobs: () => void;
 }) {
+  const activeProject = useActiveProject();
   return (
     <section className="flex h-full min-h-0 flex-col bg-transparent text-white">
       <div className="border-b border-cyan-500/10 bg-[#070b11]/22 px-4 py-3 backdrop-blur-[1px]">
@@ -97,6 +99,13 @@ export function TaskBoardView({
               {title}
             </div>
             <div className="mt-1 font-mono text-[11px] text-white/40">{subtitle}</div>
+            {activeProject.loaded ? (
+              <div className="mt-1 font-mono text-[11px] text-amber-200/80">
+                {activeProject.project
+                  ? `Project: ${activeProject.project}`
+                  : "No active project. Tasks appear here once the team starts working on a project."}
+              </div>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <button
