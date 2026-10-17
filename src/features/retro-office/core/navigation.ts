@@ -115,6 +115,73 @@ export function buildNavGrid(furniture: FurnitureItem[]): NavGrid {
   return grid;
 }
 
+/**
+ * Closest walkable point to (tx, ty) that is actually reachable from (sx, sy).
+ * Used when a destination (e.g. a meeting seat) is sealed off by furniture, so
+ * the agent walks as close as it can instead of standing still. Returns null when
+ * the start itself is boxed in.
+ * ponytail: BFS over the whole grid (72x72), fine per call; cache per grid if it shows up in profiles.
+ */
+export function nearestReachablePoint(
+  sx: number,
+  sy: number,
+  tx: number,
+  ty: number,
+  grid: NavGrid,
+): { x: number; y: number } | null {
+  const toIndex = (x: number, y: number) =>
+    Math.min(GRID_ROWS - 1, Math.max(0, Math.floor(y / GRID_CELL))) * GRID_COLS +
+    Math.min(GRID_COLS - 1, Math.max(0, Math.floor(x / GRID_CELL)));
+  const centerOf = (index: number) => ({
+    x: (index % GRID_COLS) * GRID_CELL + GRID_CELL / 2,
+    y: Math.floor(index / GRID_COLS) * GRID_CELL + GRID_CELL / 2,
+  });
+  // Start from the agent's cell, or the nearest free cell if it stands on a blocked one.
+  let start = toIndex(sx, sy);
+  if (grid[start]) {
+    let best = -1;
+    let bestDistance = Infinity;
+    for (let index = 0; index < grid.length; index += 1) {
+      if (grid[index]) continue;
+      const center = centerOf(index);
+      const distance = Math.hypot(center.x - sx, center.y - sy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    }
+    if (best < 0 || bestDistance > GRID_CELL * 10) return null;
+    start = best;
+  }
+  // 4-neighbour BFS matches astar's reachable set (it forbids diagonal corner-cutting).
+  const visited = new Uint8Array(grid.length);
+  const queue = [start];
+  visited[start] = 1;
+  let bestIndex = start;
+  let bestDistance = Infinity;
+  for (let head = 0; head < queue.length; head += 1) {
+    const index = queue[head];
+    const center = centerOf(index);
+    const distance = Math.hypot(center.x - tx, center.y - ty);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+    const row = Math.floor(index / GRID_COLS);
+    const column = index % GRID_COLS;
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nextRow = row + dr;
+      const nextColumn = column + dc;
+      if (nextRow < 0 || nextRow >= GRID_ROWS || nextColumn < 0 || nextColumn >= GRID_COLS) continue;
+      const nextIndex = nextRow * GRID_COLS + nextColumn;
+      if (grid[nextIndex] || visited[nextIndex]) continue;
+      visited[nextIndex] = 1;
+      queue.push(nextIndex);
+    }
+  }
+  return centerOf(bestIndex);
+}
+
 export function astar(
   sx: number,
   sy: number,

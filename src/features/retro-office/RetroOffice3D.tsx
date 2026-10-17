@@ -120,6 +120,7 @@ import {
 } from "@/features/retro-office/core/geometry";
 import {
   astar,
+  nearestReachablePoint,
   buildNavGrid,
   getDeskLocations,
   getGymWorkoutLocations,
@@ -938,6 +939,15 @@ function useAgentTick(
     [meetingSeatLocations, standupMeeting?.participantOrder],
   );
 
+  const resolveReachableMeetingTarget = useCallback(
+    (seat: { x: number; y: number; facing: number }, fromX: number, fromY: number) => {
+      if (planPath(fromX, fromY, seat.x, seat.y).length > 0) return seat;
+      const nearest = nearestReachablePoint(fromX, fromY, seat.x, seat.y, getNavGrid());
+      return nearest ? { ...seat, x: nearest.x, y: nearest.y } : seat;
+    },
+    [planPath, getNavGrid],
+  );
+
   useEffect(() => {
     const activeIds = new Set(agents.map((a) => a.id));
     for (const id of deskByAgentRef.current.keys())
@@ -1064,9 +1074,15 @@ function useAgentTick(
       };
       const explicitMeetingHold =
         standupActive && meetingParticipants.has(agent.id);
-      const meetingTarget = explicitMeetingHold
+      const assignedMeetingSeat = explicitMeetingHold
         ? resolveMeetingTarget(agent.id)
         : null;
+      // Seats can be sealed off by the layout (furniture/wall padding). Walk to the
+      // closest reachable point instead of standing still so the agent still "arrives".
+      const meetingTarget =
+        assignedMeetingSeat && existing
+          ? resolveReachableMeetingTarget(assignedMeetingSeat, existing.x, existing.y)
+          : assignedMeetingSeat;
       const smsBoothItem =
         (furnitureRef.current ?? []).find(
           (item) => item.type === "sms_booth",

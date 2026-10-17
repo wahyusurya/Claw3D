@@ -280,6 +280,52 @@ function saveHistoryToDisk() {
   }, 500);
 }
 
+// ---------------------------------------------------------------------------
+// Disk persistence for the agent roster (created/renamed agents + their files).
+// Without this, every adapter restart dropped user-created agents.
+// ---------------------------------------------------------------------------
+
+const AGENTS_FILE = path.join(HOME, ".hermes", "claw3d-agents.json");
+let agentsPersistTimer = null;
+
+function loadAgentsFromDisk() {
+  try {
+    if (!fs.existsSync(AGENTS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(AGENTS_FILE, "utf8"));
+    for (const saved of Array.isArray(data?.agents) ? data.agents : []) {
+      if (!saved || typeof saved.id !== "string" || !saved.id) continue;
+      if (saved.id === AGENT_ID) {
+        // Keep the orchestrator's built-in prompt/tools from code; restore user-facing fields only.
+        const main = agentRegistry.get(AGENT_ID);
+        if (typeof saved.name === "string" && saved.name) main.name = saved.name;
+        if (typeof saved.role === "string") main.role = saved.role;
+        if (saved.settings && typeof saved.settings === "object") main.settings = { ...main.settings, ...saved.settings };
+        continue;
+      }
+      agentRegistry.set(saved.id, saved);
+    }
+    for (const [key, content] of Object.entries(data?.files ?? {})) {
+      if (typeof content === "string") agentFiles.set(key, content);
+    }
+    console.log(`[hermes-adapter] Loaded ${agentRegistry.size} agent(s) from disk.`);
+  } catch (err) {
+    console.warn("[hermes-adapter] Could not load agents:", sanitizeErrorMessage(err));
+  }
+}
+
+function saveAgentsToDisk() {
+  if (agentsPersistTimer) clearTimeout(agentsPersistTimer);
+  agentsPersistTimer = setTimeout(() => {
+    try {
+      const data = { agents: [...agentRegistry.values()], files: Object.fromEntries(agentFiles) };
+      fs.mkdirSync(path.dirname(AGENTS_FILE), { recursive: true });
+      fs.writeFileSync(AGENTS_FILE, JSON.stringify(data, null, 2), "utf8");
+    } catch (err) {
+      console.warn("[hermes-adapter] Could not save agents:", sanitizeErrorMessage(err));
+    }
+  }, 300);
+}
+
 function getHistory(sessionKey) {
   if (!conversationHistory.has(sessionKey)) conversationHistory.set(sessionKey, []);
   return conversationHistory.get(sessionKey);
@@ -791,14 +837,20 @@ function execReadAgentContext(args) {
   });
 }
 
+const persistAfter = async (result) => {
+  const value = await result;
+  saveAgentsToDisk();
+  return value;
+};
+
 async function executeToolCall(tc, sendEvent) {
   console.log(`[hermes-adapter] Tool call: ${tc.name}`, JSON.stringify(tc.args).slice(0, 120));
   switch (tc.name) {
-    case "spawn_agent":          return execSpawnAgent(tc.args, sendEvent);
+    case "spawn_agent":          return persistAfter(execSpawnAgent(tc.args, sendEvent));
     case "delegate_task":        return execDelegateTask(tc.args, sendEvent);
     case "list_team":            return execListTeam();
-    case "configure_agent":      return execConfigureAgent(tc.args);
-    case "dismiss_agent":        return execDismissAgent(tc.args);
+    case "configure_agent":      return persistAfter(execConfigureAgent(tc.args));
+    case "dismiss_agent":        return persistAfter(execDismissAgent(tc.args));
     case "read_agent_context":   return execReadAgentContext(tc.args);
     default:                     return JSON.stringify({ ok: false, error: `Unknown tool: ${tc.name}` });
   }
@@ -903,6 +955,7 @@ async function handleMethod(method, params, id, sendEvent) {
         role: "", systemPrompt: `You are ${agentName}.`,
         settings: { wipe: false, continuity: true, model: HERMES_MODEL },
       });
+      saveAgentsToDisk();
       return resOk(id, { agentId: newId, name: agentName, workspace });
     }
 
@@ -911,6 +964,7 @@ async function handleMethod(method, params, id, sendEvent) {
       if (delId && delId !== AGENT_ID) {
         agentRegistry.delete(delId);
         clearHistory(`agent:${delId}:${MAIN_KEY}`);
+        saveAgentsToDisk();
       }
       return resOk(id, { ok: true, removedBindings: 0 });
     }
@@ -922,6 +976,7 @@ async function handleMethod(method, params, id, sendEvent) {
         if (typeof p.name === "string" && p.name.trim()) existing.name = p.name.trim();
         if (typeof p.workspace === "string" && p.workspace.trim()) existing.workspace = p.workspace.trim();
         if (typeof p.role === "string") existing.role = p.role.trim();
+        saveAgentsToDisk();
       }
       return resOk(id, { ok: true, removedBindings: 0 });
     }
@@ -935,6 +990,7 @@ async function handleMethod(method, params, id, sendEvent) {
     case "agents.files.set": {
       const key = `${p.agentId || AGENT_ID}/${p.name || ""}`;
       agentFiles.set(key, typeof p.content === "string" ? p.content : "");
+      saveAgentsToDisk();
       return resOk(id, {});
     }
 
@@ -1331,5 +1387,6 @@ function startAdapter() {
   });
 }
 
+loadAgentsFromDisk();
 loadHistoryFromDisk();
 startAdapter();
