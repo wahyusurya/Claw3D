@@ -2235,10 +2235,8 @@ const getAgentInitials = (name: string | null | undefined): string => {
     .join("");
 };
 
-const buildInitialFurnitureLayout = (
-  storageNamespace: string,
-  layoutPreset: OfficeLayoutPreset,
-): FurnitureItem[] =>
+/** Built-in rooms/fixtures every layout gets, applied to a stored or default layout. */
+const withOfficeFixtures = (base: FurnitureItem[]): FurnitureItem[] =>
   ensureOfficeKanbanBoard(
     ensureOfficeJukebox(
       ensureOfficeQaLab(
@@ -2246,18 +2244,20 @@ const buildInitialFurnitureLayout = (
           ensureOfficeServerRoom(
             ensureOfficePhoneBooth(
               ensureOfficeSmsBooth(
-                ensureOfficeAtm(
-                  ensureOfficePingPongTable(
-                    loadFurniture(storageNamespace) ?? materializeDefaults(layoutPreset),
-                  ),
-                ),
+                ensureOfficeAtm(ensureOfficePingPongTable(base)),
               ),
             ),
           ),
         ),
       ),
     ),
-  );
+  ).filter((item) => !isRetiredPingPongLamp(item));
+
+const buildInitialFurnitureLayout = (
+  storageNamespace: string,
+  layoutPreset: OfficeLayoutPreset,
+): FurnitureItem[] =>
+  withOfficeFixtures(loadFurniture(storageNamespace) ?? materializeDefaults(layoutPreset));
 
 export function RetroOffice3D({
   agents,
@@ -3172,6 +3172,65 @@ export function RetroOffice3D({
       window.clearTimeout(timeoutId);
     };
   }, [furniture, storageNamespace]);
+
+  // Server copy of the layout (source of truth across browsers/devices; localStorage is a cache).
+  // 1) On load / floor switch: adopt the server layout if one exists. Until that check finishes,
+  //    nothing is pushed, so a default or stale local layout can never overwrite the saved one.
+  // 2) After that: push edits (debounced). If the server had nothing yet, the current local
+  //    layout is uploaded once, which migrates existing browser-only edits.
+  const [serverLayoutNamespace, setServerLayoutNamespace] = useState<string | null>(null);
+  const lastServerLayoutJsonRef = useRef<string>("");
+  useEffect(() => {
+    if (readOnly) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/office/furniture?namespace=${encodeURIComponent(storageNamespace)}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) return; // keep the local copy; retry on next load
+        const data = (await response.json()) as { furniture?: FurnitureItem[] | null };
+        if (cancelled) return;
+        if (Array.isArray(data.furniture) && data.furniture.length > 0) {
+          const serverLayout = withOfficeFixtures(data.furniture);
+          lastServerLayoutJsonRef.current = JSON.stringify(data.furniture);
+          saveFurniture(serverLayout, storageNamespace);
+          setFurniture(serverLayout);
+        } else {
+          lastServerLayoutJsonRef.current = "";
+        }
+        setServerLayoutNamespace(storageNamespace);
+      } catch {
+        // offline / server unavailable: keep using the local copy
+      }
+    })();
+    return () => {
+      cancelled = true;
+      setServerLayoutNamespace(null);
+    };
+  }, [readOnly, storageNamespace]);
+  useEffect(() => {
+    if (readOnly || serverLayoutNamespace !== storageNamespace) return;
+    const timeoutId = window.setTimeout(() => {
+      const json = JSON.stringify(furniture);
+      if (json === lastServerLayoutJsonRef.current) return;
+      void fetch("/api/office/furniture", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ namespace: storageNamespace, furniture }),
+      })
+        .then((response) => {
+          if (response.ok) lastServerLayoutJsonRef.current = json;
+        })
+        .catch(() => {
+          // offline: the next edit retries
+        });
+    }, 800);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [furniture, readOnly, serverLayoutNamespace, storageNamespace]);
 
   useEffect(() => {
     if (readOnly || storageNamespace !== "default") return;
