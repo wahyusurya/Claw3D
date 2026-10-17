@@ -557,6 +557,24 @@ const DEFAULT_FURNITURE: FurnitureSeed[] = [
   { type: "chair", x: 100, y: 200, facing: 180 },
 ];
 
+const hasAllSeedWalls = (items: FurnitureItem[], seeds: FurnitureSeed[]) =>
+  seeds
+    .filter((seed) => seed.type === "wall")
+    .every((seed) =>
+      items.some(
+        (item) =>
+          item.type === "wall" &&
+          item.x === seed.x &&
+          item.y === seed.y &&
+          item.w === seed.w &&
+          item.h === seed.h,
+      ),
+    );
+
+/** Built-in rooms keep their special floor only while all of their default walls remain. */
+export const hasGymRoomWalls = (items: FurnitureItem[]) => hasAllSeedWalls(items, DEFAULT_GYM_ITEMS);
+export const hasQaLabWalls = (items: FurnitureItem[]) => hasAllSeedWalls(items, DEFAULT_QA_LAB_ITEMS);
+
 export const materializeDefaults = (
   preset: OfficeLayoutPreset = "office",
 ): FurnitureItem[] =>

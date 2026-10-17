@@ -91,6 +91,8 @@ import {
   isRetiredPingPongLamp,
   materializeDefaults,
   type OfficeLayoutPreset,
+  hasGymRoomWalls,
+  hasQaLabWalls,
 } from "@/features/retro-office/core/furnitureDefaults";
 import {
   clampPointToZone,
@@ -2798,6 +2800,8 @@ export function RetroOffice3D({
     [furniture],
   );
   const qaLabStations = useMemo(() => getQaLabStations(furniture), [furniture]);
+  const showGymFloor = useMemo(() => hasGymRoomWalls(furniture), [furniture]);
+  const showQaLabFloor = useMemo(() => hasQaLabWalls(furniture), [furniture]);
   const meetingSeatLocations = useMemo(
     () => getMeetingSeatLocations(furniture),
     [furniture],
@@ -5296,7 +5300,11 @@ export function RetroOffice3D({
             />
 
             {/* Floor + walls — always visible, no async loading. */}
-            <SceneFloorAndWalls showRemoteOffice={remoteOfficeEnabled} />
+            <SceneFloorAndWalls
+              showRemoteOffice={remoteOfficeEnabled}
+              showGymFloor={showGymFloor}
+              showQaLabFloor={showQaLabFloor}
+            />
 
             {/* Wall pictures — procedural, no async loading. */}
             <SceneWallPictures showRemoteOffice={remoteOfficeEnabled} />

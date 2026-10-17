@@ -169,8 +169,13 @@ function OfficeFlagPole({
 
 export const FloorAndWalls = memo(function FloorAndWalls({
   showRemoteOffice = true,
+  showGymFloor = true,
+  showQaLabFloor = true,
 }: {
   showRemoteOffice?: boolean;
+  /** Built-in rooms' special floors; hidden once the room's walls are removed in edit mode. */
+  showGymFloor?: boolean;
+  showQaLabFloor?: boolean;
 }) {
   const districtWidth = CANVAS_W * SCALE;
   const districtHeight = CANVAS_H * SCALE;
@@ -357,7 +362,7 @@ export const FloorAndWalls = memo(function FloorAndWalls({
         </>
       ) : null}
 
-      {gymZoneFloorWidth > 0 && roomZoneFloorHeight > 0 ? (
+      {showGymFloor && gymZoneFloorWidth > 0 && roomZoneFloorHeight > 0 ? (
         <>
           <mesh
             position={[gymZoneCenterX, 0.002, roomZoneCenterZ]}
@@ -388,7 +393,7 @@ export const FloorAndWalls = memo(function FloorAndWalls({
         </>
       ) : null}
 
-      {qaZoneFloorWidth > 0 && roomZoneFloorHeight > 0 ? (
+      {showQaLabFloor && qaZoneFloorWidth > 0 && roomZoneFloorHeight > 0 ? (
         <>
           <mesh
             position={[qaZoneCenterX, 0.003, roomZoneCenterZ]}
