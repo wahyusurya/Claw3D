@@ -606,14 +606,29 @@ async function runSharedSessionTurn({ sessionId: forcedSessionId, userMessage, e
   let eventName = "";
   let buffer = "";
 
+  // Abort promptly (not only when Hermes sends data — it may be silent for a whole model call).
+  // Closing the stream and /v1/runs/{id}/stop both interrupt the Hermes agent; session-chat
+  // runs need the local Hermes patch (patches/hermes-session-stream-stop.patch) for that.
+  const stopIfAborted = () => {
+    if (cancelled || !abortCheck || !abortCheck()) return cancelled;
+    cancelled = true;
+    res.destroy();
+    if (runId) {
+      hermesPost(`/v1/runs/${runId}/stop`, {}).then((stopRes) => {
+        stopRes.resume();
+        if (stopRes.statusCode === 404) {
+          console.warn("[hermes-adapter] Hermes could not stop run " + runId
+            + " (404): is patches/hermes-session-stream-stop.patch applied to Hermes?");
+        }
+      }).catch(() => {});
+    }
+    return true;
+  };
+  const abortTimer = abortCheck ? setInterval(stopIfAborted, 1000) : null;
+
   await new Promise((resolve, reject) => {
     res.on("data", (chunk) => {
-      if (abortCheck && abortCheck()) {
-        res.destroy();
-        if (runId) hermesPost(`/v1/runs/${runId}/stop`, {}).catch(() => {});
-        cancelled = true;
-        return;
-      }
+      if (stopIfAborted()) return;
       buffer += chunk.toString("utf8");
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -647,9 +662,12 @@ async function runSharedSessionTurn({ sessionId: forcedSessionId, userMessage, e
         }
       }
     });
-    res.on("end", resolve);
-    res.on("error", reject);
-  });
+    let ended = false;
+    res.on("end", () => { ended = true; resolve(); });
+    // destroy() on abort emits close, not end; any other early close is a failure
+    res.on("close", () => (ended || cancelled ? resolve() : reject(new Error("Hermes stream closed early"))));
+    res.on("error", (err) => (cancelled ? resolve() : reject(err)));
+  }).finally(() => { if (abortTimer) clearInterval(abortTimer); });
 
   if (cancelled) return { text: finalText || acc, cancelled: true };
   if (failedMessage) throw new Error(failedMessage);

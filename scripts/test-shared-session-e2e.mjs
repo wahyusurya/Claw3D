@@ -16,6 +16,7 @@
  *   F. sessions.reset never destroys the session
  *   G0. office turns are not echoed by the live sync
  *   G. a turn made outside the office (as from Telegram) reaches a connected office live
+ *   FT1-5. full-tools agents: real tools, isolation, fresh session on NEW REQUEST, abort stops Hermes
  */
 
 import { spawn } from "node:child_process";
@@ -199,6 +200,31 @@ try {
     check("FT4. NEW REQUEST → fresh session, follow-up keeps it",
       Boolean(freshSid) && freshSid !== ftEntry?.sessionApiId && ftSessionOf() === freshSid,
       `${ftEntry?.sessionApiId} → ${freshSid} → ${ftSessionOf()}`);
+    // FT5. chat.abort really stops the Hermes run (needs patches/hermes-session-stream-stop.patch):
+    // abort after the first tool starts; the later steps must never run.
+    const ftKey = `agent:${ft.agentId}:main`;
+    const abortOutcome = await new Promise((resolve) => {
+      let aborting = false;
+      const waiter = (p) => {
+        if (p.sessionKey !== ftKey) return;
+        if (!aborting && p.state === "delta" && String(p.message?.content || "").includes("Executing")) {
+          aborting = true;
+          session.send("chat.abort", { sessionKey: ftKey }).catch(() => {});
+        } else if (["aborted", "final", "error"].includes(p.state)) {
+          session.chatWaiters.delete(waiter);
+          resolve(p.state);
+        }
+      };
+      session.chatWaiters.add(waiter);
+      setTimeout(() => { session.chatWaiters.delete(waiter); resolve("timeout"); }, 240_000);
+      session.send("chat.send", { sessionKey: ftKey, message: "[Team] Use the terminal tool four separate times, one call each, in order: "
+        + "`sleep 20 && echo stopstep-1`, `sleep 20 && echo stopstep-2`, `sleep 20 && echo stopstep-3`, `sleep 20 && echo stopstep-4`. Then reply: done." });
+    });
+    await new Promise((r) => setTimeout(r, 90_000)); // long enough for steps 3-4 if the run kept going
+    const stopRows = freshSid ? (await apiGet(`/api/sessions/${freshSid}/messages`)).data || [] : [];
+    const ranLate = stopRows.some((m) => /stopstep-[34]/.test(String(m.role === "tool" ? m.content : "")));
+    check("FT5. chat.abort stops the Hermes run", abortOutcome === "aborted" && !ranLate,
+      `outcome=${abortOutcome} lateSteps=${ranLate}`);
     for (const sid of new Set([ftEntry?.sessionApiId, freshSid].filter(Boolean))) {
       await fetch(`${API}/api/sessions/${sid}`, { method: "DELETE", headers: apiHeaders });
     }

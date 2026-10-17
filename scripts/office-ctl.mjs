@@ -16,6 +16,7 @@
  *   agents update <agentId> [--name <name>] [--role <role>] [--instructions <text>]
  *   agents delete <agentId>
  *   chat <agentId> <message...>      Send a task; waits for the final reply.
+ *   stop <agentId...|all>            Abort the agents' running turns ("all" = whole team).
  *   history <agentId>                Show the agent's chat history.
  *   files get <agentId> <FILE>       Print an agent file (SOUL.md, AGENTS.md, IDENTITY.md,
  *                                    USER.md, TOOLS.md, MEMORY.md, HEARTBEAT.md).
@@ -90,6 +91,8 @@ function finish(code) {
 }
 
 ws.on("error", (err) => fail(`websocket: ${err.message}`));
+// finish() closes the socket after exit is decided; any other close (adapter restart) is an error.
+ws.on("close", () => fail("connection to the office adapter closed"));
 
 ws.on("open", () => {
   ws.send(JSON.stringify({ type: "req", id: String(nextId++), method: "connect", params: {} }));
@@ -207,6 +210,18 @@ async function run() {
           finish(1);
         }
       }, opts.timeout);
+    } else if (command === "stop") {
+      // Abort running turns (the adapter also stops the Hermes run). "all" = every agent but the Secretary.
+      const ids = [sub, ...rest].filter(Boolean);
+      if (ids.length === 0) fail("stop requires <agentId...> or all");
+      const targets = ids.includes("all")
+        ? ((await send("agents.list")).agents ?? []).map((a) => a.id).filter((id) => id !== "hermes")
+        : ids;
+      for (const agentId of targets) {
+        const res = await send("chat.abort", { sessionKey: `agent:${agentId}:main` });
+        console.log(`${agentId}: ${res?.aborted ? `stopped ${res.aborted} run(s)` : "nothing running"}`);
+      }
+      finish(0);
     } else if (command === "history") {
       const agentId = sub;
       if (!agentId) fail("history requires <agentId>");
