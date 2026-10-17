@@ -852,6 +852,54 @@ function listHermesSkills() {
 // Broadcast a gateway event to all connected clients
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Live sync: turns made from Telegram show up in an open office.
+// While an office client is connected, poll the shared transcript; when it changes
+// outside an office turn and ends with an assistant reply, broadcast a chat "final"
+// with no streamed trace. The office treats that as "refresh history" and pulls the
+// full transcript (including the Telegram user message).
+// ---------------------------------------------------------------------------
+
+const SHARED_SYNC_INTERVAL_MS = Math.max(
+  2000,
+  parseInt(process.env.CLAW3D_SHARED_SYNC_MS || "4000", 10) || 4000,
+);
+let sharedSyncFingerprint = null; // null = take a fresh baseline on the next poll
+let officeSharedTurns = 0;
+let sharedSyncPolling = false;
+
+function sharedTranscriptFingerprint(sessionId, messages) {
+  const last = messages[messages.length - 1];
+  return `${sessionId}|${messages.length}|${last ? `${last.role}:${last.content.length}:${last.content.slice(-64)}` : ""}`;
+}
+
+async function pollSharedSession() {
+  if (!SHARED_SESSION_ENABLED || activeSendEventFns.size === 0 || officeSharedTurns > 0 || sharedSyncPolling) return;
+  sharedSyncPolling = true;
+  try {
+    const sessionId = await resolveSharedSessionId();
+    const messages = await fetchSharedMessages(sessionId);
+    if (officeSharedTurns > 0) return; // an office turn started meanwhile; its own events cover it
+    const fingerprint = sharedTranscriptFingerprint(sessionId, messages);
+    if (sharedSyncFingerprint === null || fingerprint === sharedSyncFingerprint) {
+      sharedSyncFingerprint = fingerprint;
+      return;
+    }
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return; // wait for the reply; re-checked next poll
+    sharedSyncFingerprint = fingerprint;
+    broadcastEvent({
+      type: "event", event: "chat",
+      payload: {
+        runId: `shared-sync-${randomId()}`, sessionKey: MAIN_SESSION_KEY, state: "final",
+        stopReason: "end_turn", message: { role: "assistant", content: last.content },
+      },
+    });
+  } finally {
+    sharedSyncPolling = false;
+  }
+}
+
 function broadcastEvent(frame) {
   for (const fn of activeSendEventFns) {
     try { fn(frame); } catch { /* ignore */ }
@@ -1337,9 +1385,16 @@ async function handleMethod(method, params, id, sendEvent) {
           // office chat and the Telegram bot share one conversation. Sub-agents keep
           // the local agentic loop below and never enter the shared session.
           if (isOrchestrator && SHARED_SESSION_ENABLED) {
-            const turn = await runSharedSessionTurn({
-              userMessage, emitDelta: onTextDelta, abortCheck: () => aborted,
-            });
+            officeSharedTurns += 1;
+            let turn;
+            try {
+              turn = await runSharedSessionTurn({
+                userMessage, emitDelta: onTextDelta, abortCheck: () => aborted,
+              });
+            } finally {
+              officeSharedTurns -= 1;
+              sharedSyncFingerprint = null; // re-baseline so live sync doesn't echo this office turn
+            }
             if (turn.cancelled || aborted) {
               emitChat("aborted", {});
             } else {
@@ -1548,6 +1603,12 @@ async function handleMethod(method, params, id, sendEvent) {
 // ---------------------------------------------------------------------------
 
 function startAdapter() {
+  if (SHARED_SESSION_ENABLED) {
+    setInterval(() => {
+      pollSharedSession().catch((err) =>
+        console.warn("[hermes-adapter] Shared live sync failed:", sanitizeErrorMessage(err)));
+    }, SHARED_SYNC_INTERVAL_MS);
+  }
   const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("Hermes Gateway Adapter – OK\n");
@@ -1638,7 +1699,7 @@ function startAdapter() {
     console.log(`[hermes-adapter] ✓ Multi-agent orchestration: ENABLED`);
     if (SHARED_SESSION_ENABLED) {
       resolveSharedSessionId()
-        .then((sid) => console.log(`[hermes-adapter] ✓ Shared session (office↔Telegram): ${sid}`))
+        .then((sid) => console.log(`[hermes-adapter] ✓ Shared session (office↔Telegram): ${sid}, live sync every ${SHARED_SYNC_INTERVAL_MS}ms`))
         .catch((err) => console.warn("[hermes-adapter] Shared session resolve failed:", sanitizeErrorMessage(err)));
     } else {
       console.log("[hermes-adapter] Shared session: OFF (local history)");

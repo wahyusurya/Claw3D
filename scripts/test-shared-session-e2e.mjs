@@ -14,6 +14,8 @@
  *   D. sub-agent chat works via the local loop (delegation path)
  *   E. sub-agent replies do NOT leak into the shared session
  *   F. sessions.reset never destroys the session
+ *   G0. office turns are not echoed by the live sync
+ *   G. a turn made outside the office (as from Telegram) reaches a connected office live
  */
 
 import { spawn } from "node:child_process";
@@ -120,6 +122,7 @@ const child = spawn(process.execPath, ["server/hermes-gateway-adapter.js"], {
     HERMES_MODEL: process.env.HERMES_MODEL || "claw3d",
     HERMES_AGENT_NAME: process.env.HERMES_AGENT_NAME || "Claw3D",
     CLAW3D_SHARED_SESSION: "on",
+    CLAW3D_SHARED_SYNC_MS: "2000",
     CLAW3D_SHARED_SESSION_ID: SID,
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -171,6 +174,26 @@ try {
     const after = await apiGet(`/api/sessions/${SID}`);
     check("F. sessions.reset non-destructive", Boolean(after?.session?.id) && reset.ok === true,
       JSON.stringify(reset).slice(0, 80));
+
+    // G0/G. live sync: collect shared-sync finals for the main session from here on.
+    const syncedFinals = [];
+    const syncListener = (p) => {
+      if (p.state === "final" && p.sessionKey === "agent:hermes:main" && String(p.runId || "").startsWith("shared-sync-")) {
+        syncedFinals.push(String(p.message?.content ?? ""));
+      }
+    };
+    session.chatWaiters.add(syncListener);
+    await new Promise((r) => setTimeout(r, 5000)); // > 2 polls after the office turns above
+    check("G0. office turns not echoed by live sync", syncedFinals.length === 0, `${syncedFinals.length} echoes`);
+    // Simulate a Telegram turn: write straight into the shared Hermes session, bypassing the adapter.
+    await apiPost(`/api/sessions/${SID}/chat`, { input: "Reply with exactly: telegram-sync-ok" });
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline && !syncedFinals.some((t) => t.includes("telegram-sync-ok"))) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    session.chatWaiters.delete(syncListener);
+    check("G. outside turn reaches connected office live", syncedFinals.some((t) => t.includes("telegram-sync-ok")),
+      `${syncedFinals.length} sync event(s)`);
 
     // cleanup sub-agent
     await session.send("agents.delete", { agentId: subId });
