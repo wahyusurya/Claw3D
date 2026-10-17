@@ -406,12 +406,17 @@ const resolveOfficeTextDirectiveFromNormalized = (
   };
 };
 
+const isMachineMessage = (normalized: string) =>
+  normalized.startsWith("[heartbeat") || normalized.startsWith("[team]");
+
 export const resolveOfficeIntentSnapshot = (
   value: string | null | undefined,
 ): OfficeIntentSnapshot => {
   // Normalize once so every downstream intent category is derived from the same text view.
   const normalized = normalizeDirectiveText(value);
-  if (!normalized) {
+  // Heartbeat prompts and agent-to-agent briefs (office-ctl "[Team]") are not commands for the
+  // character: words like "skill", "message" or "meeting" in them pinned agents in gym/SMS/standup holds.
+  if (!normalized || isMachineMessage(normalized)) {
     return {
       normalized: "",
       desk: null,

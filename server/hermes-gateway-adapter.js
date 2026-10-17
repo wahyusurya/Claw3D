@@ -555,9 +555,21 @@ async function historyForKey(key) {
   if (SHARED_SESSION_ENABLED && agentId === AGENT_ID) return getSharedHistory();
   const agent = agentRegistry.get(agentId);
   if (SHARED_SESSION_ENABLED && agent?.fullTools && agent.sessionApiId) {
-    return fetchSharedMessages(agent.sessionApiId);
+    const messages = await fetchSharedMessages(agent.sessionApiId);
+    return messages.map((m) => (m.role === "user" ? { ...m, content: stripAgentPersona(m.content) } : m));
   }
   return getHistory(key);
+}
+
+// Full-tools turns are sent as "<agent definition>\n\n---\n\n<message>". Show only the message:
+// the definition is not what the user/teammate said, and the office parses the last user
+// message for character commands ("skill", "message", "meeting"...).
+const PERSONA_SEPARATOR = "\n\n---\n\n";
+function stripAgentPersona(content) {
+  const text = String(content || "");
+  if (!/^You are .+\(agent id: [^)]+\)/.test(text)) return text;
+  const index = text.lastIndexOf(PERSONA_SEPARATOR);
+  return index >= 0 ? text.slice(index + PERSONA_SEPARATOR.length) : text;
 }
 
 /**
@@ -1400,13 +1412,11 @@ async function handleMethod(method, params, id, sendEvent) {
       const keys = Array.isArray(p.keys) ? p.keys : [];
       const limit = typeof p.limit === "number" ? p.limit : 8;
       const maxChars = typeof p.maxChars === "number" ? p.maxChars : 240;
-      let sharedMessages = null;
-      if (SHARED_SESSION_ENABLED && keys.includes(MAIN_SESSION_KEY)) {
-        try { sharedMessages = await getSharedHistory(); } catch { sharedMessages = null; }
-      }
-      const previews = keys.map((key) => {
-        const history = (SHARED_SESSION_ENABLED && key === MAIN_SESSION_KEY && sharedMessages)
-          ? sharedMessages : getHistory(key);
+      const histories = await Promise.all(
+        keys.map((key) => historyForKey(key).catch(() => getHistory(key))),
+      );
+      const previews = keys.map((key, index) => {
+        const history = histories[index];
         if (history.length === 0) return { key, status: "empty", items: [] };
         const items = history.slice(-limit).map((msg) => ({
           role: msg.role === "assistant" ? "assistant" : "user",

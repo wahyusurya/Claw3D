@@ -198,7 +198,8 @@ async function run() {
       const agentId = sub;
       const message = rest.join(" ").trim();
       if (!agentId || !message) fail("chat requires <agentId> <message>");
-      await send("chat.send", { sessionKey: `agent:${agentId}:main`, message });
+      // "[Team]" marks agent-to-agent briefs so the office doesn't read them as character commands.
+      await send("chat.send", { sessionKey: `agent:${agentId}:main`, message: `[Team] ${message}` });
       // reply arrives as chat events; give the server-side turn time to finish
       setTimeout(() => {
         if (!chatDone) {
