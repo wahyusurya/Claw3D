@@ -343,12 +343,35 @@ const normalizeFiles = (value: unknown): GitHubFileEntry[] => {
   });
 };
 
+// Optional owner allowlist (comma-separated GitHub users/orgs). When set, searches only
+// query those owners and every per-repo read/write outside them is refused before `gh` runs.
+const allowedGitHubOwners = (): string[] =>
+  (process.env.STUDIO_GITHUB_OWNERS ?? "")
+    .split(",")
+    .map((owner) => owner.trim().toLowerCase())
+    .filter(Boolean);
+
+export const isGitHubRepoAllowed = (repo: string): boolean => {
+  const owners = allowedGitHubOwners();
+  if (owners.length === 0) return true;
+  const owner = repo.split("/")[0]?.trim().toLowerCase() ?? "";
+  return owners.includes(owner);
+};
+
+const assertGitHubRepoAllowed = (repo: string) => {
+  if (!isGitHubRepoAllowed(repo)) {
+    throw new Error(`Repository ${repo} is outside the allowed GitHub owners (STUDIO_GITHUB_OWNERS).`);
+  }
+};
+
 const loadSearchResults = (args: string[]): GitHubPullRequestSummary[] => {
-  const payload = runJsonCommand<unknown[]>("gh", args, "gh search prs");
-  return payload.map((entry) => normalizeSummary(entry));
+  const ownerArgs = allowedGitHubOwners().flatMap((owner) => ["--owner", owner]);
+  const payload = runJsonCommand<unknown[]>("gh", [...args, ...ownerArgs], "gh search prs");
+  return payload.map((entry) => normalizeSummary(entry)).filter((entry) => isGitHubRepoAllowed(entry.repo));
 };
 
 const loadRepoPullRequests = (repo: string): GitHubPullRequestSummary[] => {
+  if (!isGitHubRepoAllowed(repo)) return [];
   const payload = runJsonCommand<unknown[]>(
     "gh",
     [
@@ -402,6 +425,7 @@ const loadPullRequestFiles = (repo: string, number: number): GitHubFileEntry[] =
 };
 
 const loadPullRequestDetail = (repo: string, number: number): GitHubPullRequestDetail => {
+  assertGitHubRepoAllowed(repo);
   const payload = runJsonCommand<Record<string, unknown>>(
     "gh",
     [
@@ -515,6 +539,7 @@ export const submitGitHubPullRequestReview = (params: {
   action: GitHubReviewAction;
   body?: string | null;
 }) => {
+  assertGitHubRepoAllowed(params.repo);
   const auth = getGitHubAuthState();
   if (auth.authState !== "ready") {
     throw new Error(auth.message ?? "GitHub CLI is not ready.");
@@ -593,6 +618,7 @@ export const submitGitHubInlineComment = (params: {
   body: string;
   commitId?: string | null;
 }) => {
+  assertGitHubRepoAllowed(params.repo);
   const auth = getGitHubAuthState();
   if (auth.authState !== "ready") {
     throw new Error(auth.message ?? "GitHub CLI is not ready.");

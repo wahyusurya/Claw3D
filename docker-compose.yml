@@ -8,6 +8,7 @@
 #        CLAW3D_HOST=100.x.y.z                      # IP to bind the UI to (e.g. your Tailscale IP)
 #        CLAW3D_HERMES_SKILLS_DIR=/home/you/.hermes/profiles/claw3d/skills
 #   4. Optional GitHub screen: printf 'GH_TOKEN=%s\n' "$(gh auth token)" > .env.github
+#      Limit it to your own repos/orgs:  echo 'STUDIO_GITHUB_OWNERS=your-user,your-org' >> .env.github
 #   5. docker compose up -d --build   then   ./set-login.sh   for username/password login
 #
 # ponytail: host networking so containers reach Hermes on host loopback without exposing its API port.
