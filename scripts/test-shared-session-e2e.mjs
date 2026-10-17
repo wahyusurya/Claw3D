@@ -188,8 +188,19 @@ try {
     const ftLeak = (await apiGet(`/api/sessions/${SID}/messages`)).data || [];
     check("FT3. full-tools reply isolated from shared session",
       !ftLeak.some((m) => String(m.content || "").includes("agenttools-ok")));
-    if (ftEntry?.sessionApiId) {
-      await fetch(`${API}/api/sessions/${ftEntry.sessionApiId}`, { method: "DELETE", headers: apiHeaders });
+    // FT4. a "NEW REQUEST" brief starts the agent in a fresh session; a follow-up keeps it.
+    const ftSessionOf = () => (JSON.parse(readFileSync(`${HOME_DIR}/.hermes/claw3d-agents.json`, "utf8")).agents || [])
+      .find((a) => a.id === ft.agentId)?.sessionApiId;
+    await chatRoundTrip(session, `agent:${ft.agentId}:main`, "[Team] NEW REQUEST: reply with exactly: fresh-ok", 300_000);
+    await new Promise((r) => setTimeout(r, 500)); // roster save is debounced
+    const freshSid = ftSessionOf();
+    await chatRoundTrip(session, `agent:${ft.agentId}:main`, "[Team] Follow-up: reply with exactly: same-ok", 300_000);
+    await new Promise((r) => setTimeout(r, 500));
+    check("FT4. NEW REQUEST → fresh session, follow-up keeps it",
+      Boolean(freshSid) && freshSid !== ftEntry?.sessionApiId && ftSessionOf() === freshSid,
+      `${ftEntry?.sessionApiId} → ${freshSid} → ${ftSessionOf()}`);
+    for (const sid of new Set([ftEntry?.sessionApiId, freshSid].filter(Boolean))) {
+      await fetch(`${API}/api/sessions/${sid}`, { method: "DELETE", headers: apiHeaders });
     }
     await session.send("agents.delete", { agentId: ft.agentId });
 

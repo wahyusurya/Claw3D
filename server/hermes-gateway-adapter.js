@@ -548,6 +548,19 @@ async function ensureAgentSession(agentId) {
   return created;
 }
 
+// A "NEW REQUEST" brief starts a new task: the whole full-tools team gets fresh Hermes sessions so
+// earlier tasks (often other repos) don't leak into it. Follow-ups (APPROVED PLAN/PUSH, teammate
+// asks) keep the session. Old sessions stay in Hermes; durable knowledge lives in MEMORY.md.
+const NEW_REQUEST_RE = /^(?:\[Team\]\s*)?NEW REQUEST\b/;
+function resetTeamSessionsOnNewRequest(message) {
+  if (!NEW_REQUEST_RE.test(String(message || "").trimStart())) return;
+  const reset = [...agentRegistry.values()].filter((a) => a.fullTools && a.sessionApiId);
+  for (const a of reset) a.sessionApiId = null;
+  if (reset.length === 0) return;
+  saveAgentsToDisk();
+  console.log(`[hermes-adapter] NEW REQUEST: fresh sessions for ${reset.map((a) => a.id).join(", ")}`);
+}
+
 // Transcript for any agent:* session key — shared (Secretary), per-agent
 // (full-tools workers), or the local text loop (lightweight sub-agents).
 async function historyForKey(key) {
@@ -1529,6 +1542,7 @@ async function handleMethod(method, params, id, sendEvent) {
             if (isOrchestrator) officeSharedTurns += 1;
             let turn;
             try {
+              if (!isOrchestrator) resetTeamSessionsOnNewRequest(userMessage);
               const turnSessionId = isOrchestrator ? undefined : await ensureAgentSession(sessionAgentId);
               const persona = isOrchestrator ? "" : (composeAgentSystemPrompt(agent) || "");
               turn = await runSharedSessionTurn({
