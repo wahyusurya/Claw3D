@@ -607,8 +607,7 @@ async function runSharedSessionTurn({ sessionId: forcedSessionId, userMessage, e
   let buffer = "";
 
   // Abort promptly (not only when Hermes sends data — it may be silent for a whole model call).
-  // Closing the stream and /v1/runs/{id}/stop both interrupt the Hermes agent; session-chat
-  // runs need the local Hermes patch (patches/hermes-session-stream-stop.patch) for that.
+  // Closing the stream and /v1/runs/{id}/stop both interrupt the Hermes agent (Hermes >= 0.22).
   const stopIfAborted = () => {
     if (cancelled || !abortCheck || !abortCheck()) return cancelled;
     cancelled = true;
@@ -618,7 +617,7 @@ async function runSharedSessionTurn({ sessionId: forcedSessionId, userMessage, e
         stopRes.resume();
         if (stopRes.statusCode === 404) {
           console.warn("[hermes-adapter] Hermes could not stop run " + runId
-            + " (404): is patches/hermes-session-stream-stop.patch applied to Hermes?");
+            + " (404): this Hermes version cannot stop session-chat runs (fixed upstream in v0.22).");
         }
       }).catch(() => {});
     }
